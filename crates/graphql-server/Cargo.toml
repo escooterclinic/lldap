@@ -45,6 +45,7 @@ path = "../sql-backend-handler"
 path = "../validation"
 
 [dev-dependencies]
+sea-orm = { workspace = true }
 mockall = { workspace = true }
 pretty_assertions = { workspace = true }
 tokio = { workspace = true }

@@ -87,6 +87,11 @@ It's possible to install lldap from OCI images ([docker](docs/install.md#with-do
 
 Building [from source](docs/install.md#from-source) and [cross-compiling](docs/install.md#cross-compilation) to a different hardware architecture is also supported.
 
+## Non-human service accounts
+
+The org fork adds [atomic Bot-marked service-account creation](docs/service-user-creation.md)
+through the existing administrator authority; normal user creation is unchanged.
+
 ## Usage
 
 The simplest way to use LLDAP is through the web front-end. There you can

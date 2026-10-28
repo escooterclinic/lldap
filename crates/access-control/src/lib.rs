@@ -9,7 +9,7 @@ use lldap_domain::{
     schema::{AttributeSchema, Schema},
     types::{
         AttributeName, Group, GroupDetails, GroupId, GroupName, LdapObjectClass, User,
-        UserAndGroups, UserId,
+        UserAndGroups, UserId, Uuid,
     },
 };
 use lldap_domain_handlers::handler::{
@@ -52,6 +52,11 @@ pub trait AdminBackendHandler:
     + SchemaBackendHandler
 {
     async fn create_user(&self, request: CreateUserRequest) -> Result<()>;
+    async fn create_service_user(
+        &self,
+        request: CreateUserRequest,
+        expected_bot_group_uuid: Uuid,
+    ) -> Result<()>;
     async fn delete_user(&self, user_id: &UserId) -> Result<()>;
     async fn add_user_to_group(&self, user_id: &UserId, group_id: GroupId) -> Result<()>;
     async fn remove_user_from_group(&self, user_id: &UserId, group_id: GroupId) -> Result<()>;
@@ -110,6 +115,14 @@ impl<Handler: BackendHandler> UserWriteableBackendHandler for Handler {
 impl<Handler: BackendHandler> AdminBackendHandler for Handler {
     async fn create_user(&self, request: CreateUserRequest) -> Result<()> {
         <Handler as UserBackendHandler>::create_user(self, request).await
+    }
+    async fn create_service_user(
+        &self,
+        request: CreateUserRequest,
+        expected_bot_group_uuid: Uuid,
+    ) -> Result<()> {
+        <Handler as UserBackendHandler>::create_service_user(self, request, expected_bot_group_uuid)
+            .await
     }
     async fn delete_user(&self, user_id: &UserId) -> Result<()> {
         <Handler as UserBackendHandler>::delete_user(self, user_id).await
