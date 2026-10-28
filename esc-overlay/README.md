@@ -1,10 +1,13 @@
 # Business package overlay — staging source only
 
-This single overlay preserves the packaged LLDAP executable and original unit.
+This single staging overlay leaves the installed executable and unit untouched.
+It is not an availability-preserving activation mechanism.
 `runtime.py` selects a reviewed immutable release only while the installed
-package version AND binary digest match the reviewed baseline. If the vendor
-package changes, configuration is unknown or the candidate is unsafe, it selects
-the current packaged executable and logs atomic-API `PENDING`. It never calls
+package version AND binary digest match the reviewed baseline. Only with the same explicitly pinned vendor unit and drop-in filename/hash set,
+a changed package binary/version or unsafe candidate selects the current package
+binary with atomic-API `PENDING`. Unit/drop-in additions, removal or content drift,
+untrusted ancestry, or an unavailable trusted unit contract refuse execution.
+There is no availability promise across unit drift. It never calls
 legacy `createUser` as a fallback for service provisioning. Even selecting the
 reviewed fork reports `PENDING_LIVE_PROOF`, not global readiness.
 
@@ -18,18 +21,27 @@ Automatic future convergence of the new atomic API is NOT delivered here.
 ## What the source does
 
 `prepare.py` accepts an explicit reviewed artifact digest, baseline package
-version/digest and a NEW staging output directory. It captures the checked
+version/digest, vendor unit SHA256, explicit drop-in filename/hash JSON map
+(`--baseline-dropins-manifest`) and a NEW staging output directory. It captures the checked
 artifact bytes, writes the versioned desired file tree and named unit drop-in,
-and emits a desired-files digest/mode manifest. Existing output and symlinks
+and emits a desired-files digest/mode manifest including explicit directory
+modes. The staging root is0700; every internal directory is0755 independent of
+umask. Symlink or unsafe staging ancestors are refused. Existing output and symlinks
 are refused. It creates no service, account, key, timer, grant or live file.
 
 The generated drop-in clears only `ExecStart`, then invokes the owner runtime
 under the baseline unit's existing user, working directory and other properties.
-The runtime accepts no caller arguments. Configuration allows exactly its four
-version/hash fields; callers cannot supply an executable path.
+The runtime accepts no caller arguments. Runtime executable/config/unit ancestors
+must be root-owned directories without group/world write access. Fixed service
+drop-in directories are compared against the recorded map, excluding only this
+overlay's exact named drop-in. An overriding `/etc` or `/run` unit fragment refuses
+startup. Activation must verify that this supported package-unit layout really
+represents the effective target command; unsupported systemd search paths or
+configuration are not silently adopted. Configuration allows exactly six
+version/hash/drop-in contract fields; callers cannot supply an executable path.
 
-Tests: `python3 -m unittest discover -s esc-overlay -p 'test_*.py' -q` — ten
-passed on the Linux runner. They exercise package upgrades/content changes,
+Tests: `python3 -m unittest discover -s esc-overlay -p 'test_*.py' -q` — fifteen tests. `python3 esc-overlay/prove_guards.py` additionally
+requires four independent guard-removal mutations to fail behaviorally. They exercise package upgrades/content changes,
 unsafe or symlinked candidates/configuration, fixed argv, exact staging hashes,
 existing-output preservation and no activation. Fixture modes are explicit so
 the runner's group-write umask cannot change the intended safety predicate.
