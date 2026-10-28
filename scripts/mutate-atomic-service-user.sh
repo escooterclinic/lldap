@@ -6,7 +6,6 @@ if ! command -v cargo >/dev/null 2>&1; then
   export CARGO_HOME="$PWD/.gate-cargo" RUSTUP_HOME="$PWD/.gate-rustup"
   export PATH="$CARGO_HOME/bin:${PATH:-/usr/bin:/bin}"
 fi
-export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}"
 source_root="$PWD"
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/lldap-service-mutations.XXXXXXXX")
 trap 'rm -rf "$scratch"' EXIT
@@ -19,6 +18,7 @@ for spec in \
       --exclude=./.git -cf - . | tar -xf - -C "$copied"
   (
     cd "$copied"
+    export CARGO_TARGET_DIR="$copied/target"
     git apply --check "$source_root/scripts/mutations/$label.patch"
     git apply "$source_root/scripts/mutations/$label.patch"
     set +e

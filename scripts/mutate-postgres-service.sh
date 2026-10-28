@@ -2,7 +2,6 @@
 # Each invocation owns a separate private PG cluster; reviewed checkout stays intact.
 set -euo pipefail
 source_root="$PWD"
-export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}"
 scratch=$(mktemp -d /tmp/lldap-pg-mutations.XXXXXXXX)
 trap 'rm -rf -- "$scratch"' EXIT
 for label in bot-marker-policy atomic-user-marker; do
@@ -12,6 +11,7 @@ for label in bot-marker-policy atomic-user-marker; do
       --exclude=./.git -cf - . | tar -xf - -C "$copied"
   (
     cd "$copied"
+    export CARGO_TARGET_DIR="$copied/target"
     git apply --check "$source_root/scripts/mutations/$label.patch"
     git apply "$source_root/scripts/mutations/$label.patch"
     set +e

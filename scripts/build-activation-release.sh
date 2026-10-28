@@ -38,6 +38,8 @@ PY
   cargo test --locked --workspace
   bash scripts/test-service-postgres.sh
   bash scripts/mutate-postgres-service.sh
+  git diff --exit-code
+  git diff --cached --exit-code
   python3 esc-overlay/prove_guards.py
   bash scripts/test-atomic-service-user.sh --build-artifact "$output/artifact"
   cmp schema.graphql "$output/artifact/schema.graphql"
