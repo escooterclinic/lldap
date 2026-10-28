@@ -224,3 +224,11 @@ running `./export_schema.sh`.
 
 Join our [Discord server](https://discord.gg/h5PEdRMNyP) if you have any
 questions!
+
+## Fork verification and upstream updates
+
+This fork keeps deployment-specific behavior in `esc-overlay/`; see its `ACTIVATION.md` for the explicit staged rollout and rollback prerequisites. Fetch vendor updates from `https://github.com/lldap/lldap.git` into an isolated branch, retain the overlay, and review the complete resulting range before landing.
+
+Run `./verify.sh` on a managed Linux gate runner. The suite uses the pinned Rust 1.91.0 toolchain and Cargo.lock, Python 3.12, a disposable PostgreSQL 17 datastore, the native workspace and schema checks, and behavioral guard mutations. Arm the tracked hooks with `git config core.hooksPath .githooks`. The existing fleet worker floor is recorded in `REPO-CONTRACT.toml`; it is not a throughput benchmark.
+
+Build release artifacts separately through `scripts/run-verified-activation-build.sh` using the reviewed exact Git commit and tree plus a new absolute output directory. Preserve the resulting source-input manifest and binary hashes. A subsequent documentation, checker, or gate-only commit does not relabel an earlier binary as newly compiled. Deployment, authenticated native controls and service provisioning require their own verified receipts.
