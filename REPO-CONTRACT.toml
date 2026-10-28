@@ -1,0 +1,26 @@
+[repo]
+name = "lldap"
+what_it_is = "Rust LDAP identity server and GraphQL administration API with one deployment overlay."
+what_it_does = "Serves directory authentication and administration. The overlay adds administrator-only transactional service-user creation with committed nonhuman membership before credentials can be issued. A stopped server interrupts dependent directory authentication."
+owner = "escooterclinic/lldap maintainers"
+status = "active"
+
+[rules]
+must = [
+  "Only administrators create service users; the actual Bot UUID, user attributes and membership commit together or all roll back (GraphQL authorization and PostgreSQL atomicity controls).",
+  "Existing createUser behavior remains covered by the upstream workspace suite.",
+  "Deployment rollback deletes only positively owned files; unsafe trust fails closed and package fallback passes current vendor arguments unchanged (overlay behavioral controls and guard mutations).",
+]
+
+[tests]
+command = "./verify.sh"
+suite = "esc-overlay"
+covers = "Full Rust workspace behavior, admin-only service creation, exact marker UUID policy, PostgreSQL rollback and concurrent-reader invisibility, consistent private backup readback, schema generation, package-upgrade fallback, file ownership and sealed-artifact controls. Python controls live in esc-overlay; native tests also live throughout crates and server. Mutations must fail behaviorally. This is source coverage, not production delivery or a measured code-coverage percentage."
+# Records the existing explicitly approved fleet floor, observed in successful native gates.
+# This is neither a new performance choice nor a benchmark claim. Cargo retains its own defaults.
+parallel = 8
+
+[runner]
+toolchains = ["python@3.12", "postgres@17"]
+system_packages = ["curl", "libssl-dev", "pkg-config"]
+# Rust 1.91.0 comes from rust-toolchain.toml and the disposable repo-owned gate bootstrap.
