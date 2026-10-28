@@ -1,0 +1,19 @@
+--- a/crates/sql-backend-handler/src/sql_user_backend_handler.rs
++++ b/crates/sql-backend-handler/src/sql_user_backend_handler.rs
+@@ -407,7 +407,7 @@
+                         .filter(GroupColumn::Uuid.eq(expected_bot_group_uuid.clone()))
+                         .all(transaction)
+                         .await?;
+-                    if markers.len() != 1 || markers[0].display_name.as_str() != "Bot" {
++                    if markers.len() != 1 {
+                         return Err(DomainError::EntityNotFound(
+                             "Current Bot marker does not match".into(),
+                         ));
+@@ -420,7 +420,6 @@
+                         )
+                         .filter(GroupColumn::GroupId.eq(marker.group_id))
+                         .filter(GroupColumn::Uuid.eq(expected_bot_group_uuid))
+-                        .filter(GroupColumn::DisplayName.eq("Bot"))
+                         .exec(transaction)
+                         .await?;
+                     if update.rows_affected != 1 {
