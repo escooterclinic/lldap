@@ -20,4 +20,5 @@ if ! command -v cargo >/dev/null 2>&1; then
   export RUSTUP_HOME="$PWD/.gate-rustup"
   export PATH="$CARGO_HOME/bin:$PATH"
 fi
-cargo test --locked -p lldap_sql_backend_handler test_service_user_postgres_atomicity_and_concurrent_readback -- --ignored --exact sql_user_backend_handler::tests::test_service_user_postgres_atomicity_and_concurrent_readback
+cargo test --locked -p lldap_sql_backend_handler --lib sql_user_backend_handler::tests::test_service_user_postgres_atomicity_and_concurrent_readback -- --ignored --exact
+python3 scripts/prove-postgres-backup.py "$cluster_root"
