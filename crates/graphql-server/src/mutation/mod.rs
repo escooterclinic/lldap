@@ -1,5 +1,6 @@
 pub mod helpers;
 pub mod inputs;
+mod service_user;
 
 // Re-export public types
 pub use inputs::{
@@ -86,6 +87,15 @@ impl<Handler: BackendHandler> Mutation<Handler> {
             .await?;
         let user_details = handler.get_user_details(&user_id).instrument(span).await?;
         super::query::User::<Handler>::from_user(user_details, Arc::new(schema))
+    }
+
+    /// Atomically create a non-human user and its exact current Bot membership.
+    async fn create_service_user(
+        context: &Context<Handler>,
+        user: CreateUserInput,
+        expected_bot_group_uuid: String,
+    ) -> FieldResult<super::query::User<Handler>> {
+        service_user::create(context, user, expected_bot_group_uuid).await
     }
 
     async fn create_group(
@@ -570,6 +580,158 @@ mod tests {
         M: GraphQLType<DefaultScalarValue, Context = C, TypeInfo = ()>,
     {
         RootNode::new(query_root, mutation_root, EmptySubscription::<C>::new())
+    }
+
+    #[tokio::test]
+    async fn test_create_service_user_denies_non_admin_before_backend_calls() {
+        let query = r#"mutation {
+            createServiceUser(user: {id: "svc-test", email: "fixture@example.invalid"},
+                expectedBotGroupUuid: "11111111-1111-4111-8111-111111111111") { id }
+        }"#;
+        for permission in [
+            Permission::Regular,
+            Permission::Readonly,
+            Permission::PasswordManager,
+        ] {
+            let context = Context::new_for_tests(
+                MockTestBackendHandler::new(),
+                ValidationResults {
+                    user: UserId::new("fixture-reader"),
+                    permission,
+                },
+            );
+            let schema = mutation_schema(
+                Query::<MockTestBackendHandler>::new(),
+                Mutation::<MockTestBackendHandler>::new(),
+            );
+            let (_, errors) = execute(query, None, &schema, &Variables::new(), &context)
+                .await
+                .expect("the declared service mutation must validate");
+            assert_eq!(errors.len(), 1);
+            assert_eq!(
+                errors[0].error().message(),
+                "Unauthorized service user creation"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_service_user_admin_returns_committed_bot_membership() {
+        use lldap_domain::requests::CreateGroupRequest;
+        use lldap_domain_handlers::handler::GroupBackendHandler;
+        use lldap_sql_backend_handler::{SqlBackendHandler, sql_tables::init_table};
+        let pool = sea_orm::Database::connect("sqlite::memory:").await.unwrap();
+        init_table(&pool).await.unwrap();
+        let handler = SqlBackendHandler::new(
+            lldap_auth::opaque::server::generate_random_private_key(),
+            pool,
+        );
+        let group_id = GroupBackendHandler::create_group(
+            &handler,
+            CreateGroupRequest {
+                display_name: "Bot".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let marker = GroupBackendHandler::get_group_details(&handler, group_id)
+            .await
+            .unwrap()
+            .uuid;
+        let query = format!(
+            r#"mutation {{
+            createServiceUser(user: {{id: "svc-integration", email: "fixture@example.invalid"}},
+                expectedBotGroupUuid: "{marker}") {{ id groups {{ displayName uuid }} }}
+        }}"#
+        );
+        let context = Context::new_for_tests(
+            handler,
+            ValidationResults {
+                user: UserId::new("fixture-admin"),
+                permission: Permission::Admin,
+            },
+        );
+        let schema = mutation_schema(
+            Query::<SqlBackendHandler>::new(),
+            Mutation::<SqlBackendHandler>::new(),
+        );
+        let (data, errors) = execute(&query, None, &schema, &Variables::new(), &context)
+            .await
+            .unwrap();
+        assert!(errors.is_empty());
+        assert_eq!(
+            data,
+            graphql_value!({"createServiceUser": {
+                "id": "svc-integration", "groups": [{"displayName": "Bot", "uuid": marker.as_str()}]
+            }})
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_service_user_admin_backend_error_is_redacted() {
+        let mut mock = MockTestBackendHandler::new();
+        lldap_test_utils::setup_default_schema(&mut mock);
+        mock.expect_create_service_user()
+            .times(1)
+            .returning(|_, _| {
+                Err(lldap_domain_model::error::DomainError::InternalError(
+                    "private-backend-detail".into(),
+                ))
+            });
+        let context = Context::new_for_tests(
+            mock,
+            ValidationResults {
+                user: UserId::new("fixture-admin"),
+                permission: Permission::Admin,
+            },
+        );
+        let schema = mutation_schema(
+            Query::<MockTestBackendHandler>::new(),
+            Mutation::<MockTestBackendHandler>::new(),
+        );
+        let query = r#"mutation { createServiceUser(user: {id: "svc-test", email: "fixture@example.invalid"},
+            expectedBotGroupUuid: "11111111-1111-4111-8111-111111111111") { id } }"#;
+        let (_, errors) = execute(query, None, &schema, &Variables::new(), &context)
+            .await
+            .unwrap();
+        assert_eq!(errors.len(), 1);
+        let message = errors[0].error().message();
+        assert!(message.starts_with("Service user creation failed; error_id="));
+        assert!(!message.contains("private-backend-detail"));
+    }
+
+    #[tokio::test]
+    async fn test_create_service_user_admin_requires_canonical_nonzero_marker() {
+        for marker in [
+            "not-a-uuid",
+            "00000000-0000-0000-0000-000000000000",
+            "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA",
+        ] {
+            let context = Context::new_for_tests(
+                MockTestBackendHandler::new(),
+                ValidationResults {
+                    user: UserId::new("fixture-admin"),
+                    permission: Permission::Admin,
+                },
+            );
+            let schema = mutation_schema(
+                Query::<MockTestBackendHandler>::new(),
+                Mutation::<MockTestBackendHandler>::new(),
+            );
+            let query = format!(
+                r#"mutation {{ createServiceUser(user: {{id: "svc-test", email: "fixture@example.invalid"}},
+                expectedBotGroupUuid: "{marker}") {{ id }} }}"#
+            );
+            let (_, errors) = execute(&query, None, &schema, &Variables::new(), &context)
+                .await
+                .unwrap();
+            assert_eq!(errors.len(), 1);
+            assert_eq!(
+                errors[0].error().message(),
+                "Canonical Bot marker UUID required"
+            );
+        }
     }
 
     #[tokio::test]

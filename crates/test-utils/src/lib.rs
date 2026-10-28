@@ -7,7 +7,7 @@ use lldap_domain::{
     schema::{AttributeList, AttributeSchema, Schema},
     types::{
         AttributeName, AttributeType, Group, GroupDetails, GroupId, LdapObjectClass, User,
-        UserAndGroups, UserId,
+        UserAndGroups, UserId, Uuid,
     },
 };
 use lldap_domain_handlers::handler::{
@@ -47,6 +47,7 @@ mockall::mock! {
     impl UserBackendHandler for TestBackendHandler {
         async fn get_user_details(&self, user_id: &UserId) -> Result<User>;
         async fn create_user(&self, request: CreateUserRequest) -> Result<()>;
+    async fn create_service_user(&self, request: CreateUserRequest, expected_bot_group_uuid: Uuid) -> Result<()>;
         async fn update_user(&self, request: UpdateUserRequest) -> Result<()>;
         async fn delete_user(&self, user_id: &UserId) -> Result<()>;
         async fn get_user_groups(&self, user_id: &UserId) -> Result<HashSet<GroupDetails>>;

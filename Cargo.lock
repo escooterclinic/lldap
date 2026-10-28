@@ -2863,6 +2863,7 @@ dependencies = [
  "lldap_validation",
  "mockall",
  "pretty_assertions",
+ "sea-orm",
  "serde",
  "serde_json",
  "tokio",

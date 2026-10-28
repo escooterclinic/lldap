@@ -25,6 +25,56 @@ use sea_orm::{
 use std::collections::HashSet;
 use tracing::instrument;
 
+impl SqlBackendHandler {
+    async fn insert_user_in_transaction(
+        transaction: &DatabaseTransaction,
+        request: CreateUserRequest,
+    ) -> Result<()> {
+        let now = chrono::Utc::now().naive_utc();
+        let uuid = Uuid::from_name_and_date(request.user_id.as_str(), &now);
+        let lower_email = request.email.as_str().to_lowercase();
+        let new_user = model::users::ActiveModel {
+            user_id: Set(request.user_id.clone()),
+            email: Set(request.email),
+            lowercase_email: Set(lower_email),
+            display_name: to_value(&request.display_name),
+            creation_date: ActiveValue::Set(now),
+            uuid: ActiveValue::Set(uuid),
+            modified_date: ActiveValue::Set(now),
+            password_modified_date: ActiveValue::Set(now),
+            ..Default::default()
+        };
+        let mut new_user_attributes = Vec::new();
+        let schema = Self::get_schema_with_transaction(transaction).await?;
+        for attribute in request.attributes {
+            if schema
+                .user_attributes
+                .get_attribute_type(&attribute.name)
+                .is_some()
+            {
+                new_user_attributes.push(model::user_attributes::ActiveModel {
+                    user_id: Set(request.user_id.clone()),
+                    attribute_name: Set(attribute.name),
+                    value: Set(attribute.value.into()),
+                });
+            } else {
+                return Err(DomainError::InternalError(format!(
+                    "Attribute name {} doesn't exist in the user schema,
+                    yet was attempted to be inserted in the database",
+                    &attribute.name
+                )));
+            }
+        }
+        new_user.insert(transaction).await?;
+        if !new_user_attributes.is_empty() {
+            model::UserAttributes::insert_many(new_user_attributes)
+                .exec(transaction)
+                .await?;
+        }
+        Ok(())
+    }
+}
+
 fn attribute_condition(name: AttributeName, value: Option<Serialized>) -> Cond {
     Expr::in_subquery(
         Expr::col(UserColumn::UserId.as_column_ref()),
@@ -334,50 +384,63 @@ impl UserBackendHandler for SqlBackendHandler {
 
     #[instrument(skip(self), level = "debug", err, fields(user_id = ?request.user_id.as_str()))]
     async fn create_user(&self, request: CreateUserRequest) -> Result<()> {
-        let now = chrono::Utc::now().naive_utc();
-        let uuid = Uuid::from_name_and_date(request.user_id.as_str(), &now);
-        let lower_email = request.email.as_str().to_lowercase();
-        let new_user = model::users::ActiveModel {
-            user_id: Set(request.user_id.clone()),
-            email: Set(request.email),
-            lowercase_email: Set(lower_email),
-            display_name: to_value(&request.display_name),
-            creation_date: ActiveValue::Set(now),
-            uuid: ActiveValue::Set(uuid),
-            modified_date: ActiveValue::Set(now),
-            password_modified_date: ActiveValue::Set(now),
-            ..Default::default()
-        };
-        let mut new_user_attributes = Vec::new();
+        self.sql_pool
+            .transaction::<_, (), DomainError>(|transaction| {
+                Box::pin(Self::insert_user_in_transaction(transaction, request))
+            })
+            .await?;
+        Ok(())
+    }
+
+    #[instrument(skip(self), level = "debug", err, fields(user_id = ?request.user_id.as_str()))]
+    async fn create_service_user(
+        &self,
+        request: CreateUserRequest,
+        expected_bot_group_uuid: Uuid,
+    ) -> Result<()> {
+        #[cfg(test)]
+        let pause = self.service_user_pause.clone();
         self.sql_pool
             .transaction::<_, (), DomainError>(|transaction| {
                 Box::pin(async move {
-                    let schema = Self::get_schema_with_transaction(transaction).await?;
-                    for attribute in request.attributes {
-                        if schema
-                            .user_attributes
-                            .get_attribute_type(&attribute.name)
-                            .is_some()
-                        {
-                            new_user_attributes.push(model::user_attributes::ActiveModel {
-                                user_id: Set(request.user_id.clone()),
-                                attribute_name: Set(attribute.name),
-                                value: Set(attribute.value.into()),
-                            });
-                        } else {
-                            return Err(DomainError::InternalError(format!(
-                                "Attribute name {} doesn't exist in the user schema,
-                                    yet was attempted to be inserted in the database",
-                                &attribute.name
-                            )));
-                        }
+                    let markers = model::Group::find()
+                        .filter(GroupColumn::Uuid.eq(expected_bot_group_uuid.clone()))
+                        .all(transaction)
+                        .await?;
+                    if markers.len() != 1 || markers[0].display_name.as_str() != "Bot" {
+                        return Err(DomainError::EntityNotFound(
+                            "Current Bot marker does not match".into(),
+                        ));
                     }
-                    new_user.insert(transaction).await?;
-                    if !new_user_attributes.is_empty() {
-                        model::UserAttributes::insert_many(new_user_attributes)
-                            .exec(transaction)
-                            .await?;
+                    let marker = &markers[0];
+                    let update = model::Group::update_many()
+                        .col_expr(
+                            GroupColumn::ModifiedDate,
+                            Expr::value(chrono::Utc::now().naive_utc()),
+                        )
+                        .filter(GroupColumn::GroupId.eq(marker.group_id))
+                        .filter(GroupColumn::Uuid.eq(expected_bot_group_uuid))
+                        .filter(GroupColumn::DisplayName.eq("Bot"))
+                        .exec(transaction)
+                        .await?;
+                    if update.rows_affected != 1 {
+                        return Err(DomainError::EntityNotFound(
+                            "Current Bot marker changed".into(),
+                        ));
                     }
+                    let user_id = request.user_id.clone();
+                    Self::insert_user_in_transaction(transaction, request).await?;
+                    #[cfg(test)]
+                    if let Some(pause) = pause {
+                        pause.0.notify_one();
+                        pause.1.notified().await;
+                    }
+                    model::memberships::ActiveModel {
+                        user_id: Set(user_id),
+                        group_id: Set(marker.group_id),
+                    }
+                    .insert(transaction)
+                    .await?;
                     Ok(())
                 })
             })
@@ -489,6 +552,188 @@ mod tests {
     use lldap_domain_handlers::handler::SubStringFilter;
     use lldap_domain_model::model::UserColumn;
     use pretty_assertions::{assert_eq, assert_ne};
+
+    #[tokio::test]
+    async fn test_create_service_user_commits_bot_marker_with_user() {
+        let fixture = TestFixture::new().await;
+        let bot_id = insert_group(&fixture.handler, "Bot").await;
+        let marker = lldap_domain_handlers::handler::GroupBackendHandler::get_group_details(
+            &fixture.handler,
+            bot_id,
+        )
+        .await
+        .unwrap();
+        let user = UserId::new("svc-native-offboarding-test");
+        fixture
+            .handler
+            .create_service_user(
+                CreateUserRequest {
+                    user_id: user.clone(),
+                    email: "service@example.invalid".into(),
+                    display_name: Some("Native offboarding fixture".into()),
+                    attributes: vec![],
+                },
+                marker.uuid.clone(),
+            )
+            .await
+            .unwrap();
+        assert!(fixture.handler.get_user_details(&user).await.is_ok());
+        let marker = lldap_domain_handlers::handler::GroupBackendHandler::get_group_details(
+            &fixture.handler,
+            bot_id,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            fixture.handler.get_user_groups(&user).await.unwrap(),
+            HashSet::from([marker])
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_service_user_refuses_non_bot_group_without_user() {
+        let fixture = TestFixture::new().await;
+        let other = lldap_domain_handlers::handler::GroupBackendHandler::get_group_details(
+            &fixture.handler,
+            fixture.groups[0],
+        )
+        .await
+        .unwrap();
+        let user = UserId::new("svc-denied-test");
+        let result = fixture
+            .handler
+            .create_service_user(
+                CreateUserRequest {
+                    user_id: user.clone(),
+                    email: "denied@example.invalid".into(),
+                    display_name: None,
+                    attributes: vec![],
+                },
+                other.uuid,
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(fixture.handler.get_user_details(&user).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_create_service_user_membership_failure_rolls_back_all_rows() {
+        use sea_orm::{ConnectionTrait, DbBackend, PaginatorTrait, Statement};
+        let fixture = TestFixture::new().await;
+        let bot_id = insert_group(&fixture.handler, "Bot").await;
+        let marker = lldap_domain_handlers::handler::GroupBackendHandler::get_group_details(
+            &fixture.handler,
+            bot_id,
+        )
+        .await
+        .unwrap();
+        fixture.handler.pool().execute(Statement::from_string(DbBackend::Sqlite,
+            "CREATE TRIGGER service_membership_failure BEFORE INSERT ON memberships BEGIN SELECT RAISE(ABORT, 'injected membership failure'); END;".to_string()
+        )).await.unwrap();
+        let user = UserId::new("svc-rollback-test");
+        let result = fixture
+            .handler
+            .create_service_user(
+                CreateUserRequest {
+                    user_id: user.clone(),
+                    email: "rollback@example.invalid".into(),
+                    display_name: None,
+                    attributes: vec![Attribute {
+                        name: "first_name".into(),
+                        value: "service".to_string().into(),
+                    }],
+                },
+                marker.uuid.clone(),
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(fixture.handler.get_user_details(&user).await.is_err());
+        assert_eq!(
+            model::UserAttributes::find()
+                .filter(model::UserAttributesColumn::UserId.eq(user.clone()))
+                .count(fixture.handler.pool())
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            model::Membership::find()
+                .filter(model::MembershipColumn::UserId.eq(user))
+                .count(fixture.handler.pool())
+                .await
+                .unwrap(),
+            0
+        );
+        let after = lldap_domain_handlers::handler::GroupBackendHandler::get_group_details(
+            &fixture.handler,
+            bot_id,
+        )
+        .await
+        .unwrap();
+        assert_eq!(after, marker);
+    }
+
+    #[tokio::test]
+    async fn test_create_service_user_concurrent_reader_never_sees_unmarked_user() {
+        use sea_orm::{ConnectOptions, ConnectionTrait, Database};
+        use std::sync::Arc;
+        let path =
+            std::env::temp_dir().join(format!("lldap-service-{}.sqlite", uuid::Uuid::new_v4()));
+        let url = format!("sqlite://{}?mode=rwc", path.display());
+        let mut options = ConnectOptions::new(url.clone());
+        options.max_connections(2).sqlx_logging(false);
+        let pool = Database::connect(options).await.unwrap();
+        pool.execute_unprepared("PRAGMA journal_mode=WAL")
+            .await
+            .unwrap();
+        crate::sql_tables::init_table(&pool).await.unwrap();
+        let mut handler = SqlBackendHandler::new(generate_random_private_key(), pool.clone());
+        let bot_id = insert_group(&handler, "Bot").await;
+        let marker = lldap_domain_handlers::handler::GroupBackendHandler::get_group_details(
+            &handler, bot_id,
+        )
+        .await
+        .unwrap();
+        let pause = Arc::new((tokio::sync::Notify::new(), tokio::sync::Notify::new()));
+        handler.service_user_pause = Some(pause.clone());
+        let reader_pool = Database::connect(url).await.unwrap();
+        let reader = SqlBackendHandler::new(generate_random_private_key(), reader_pool.clone());
+        let user = UserId::new("svc-concurrent-test");
+        let wanted = user.clone();
+        let mut creation = tokio::spawn(async move {
+            handler
+                .create_service_user(
+                    CreateUserRequest {
+                        user_id: wanted,
+                        email: "concurrent@example.invalid".into(),
+                        display_name: None,
+                        attributes: vec![],
+                    },
+                    marker.uuid,
+                )
+                .await
+        });
+        tokio::select! {
+            _ = pause.0.notified() => {},
+            result = &mut creation => panic!("creation ended before the controlled interleave: {result:?}"),
+        }
+        let during = reader.get_user_details(&user).await;
+        pause.1.notify_one();
+        creation.await.unwrap().unwrap();
+        assert!(
+            during.is_err(),
+            "reader must not observe the uncommitted unmarked user"
+        );
+        assert_eq!(reader.get_user_groups(&user).await.unwrap().len(), 1);
+        reader_pool.close().await.unwrap();
+        pool.close().await.unwrap();
+        for suffix in ["", "-wal", "-shm"] {
+            let owned = std::path::PathBuf::from(format!("{}{suffix}", path.display()));
+            if owned.exists() {
+                std::fs::remove_file(owned).unwrap();
+            }
+        }
+    }
 
     #[tokio::test]
     async fn test_list_users_no_filter() {

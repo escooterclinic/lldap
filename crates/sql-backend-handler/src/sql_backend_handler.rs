@@ -7,6 +7,9 @@ use lldap_domain_handlers::handler::BackendHandler;
 pub struct SqlBackendHandler {
     pub(crate) opaque_setup: ServerSetup,
     pub(crate) sql_pool: DbConnection,
+    #[cfg(test)]
+    pub(crate) service_user_pause:
+        Option<std::sync::Arc<(tokio::sync::Notify, tokio::sync::Notify)>>,
 }
 
 impl SqlBackendHandler {
@@ -14,6 +17,8 @@ impl SqlBackendHandler {
         SqlBackendHandler {
             opaque_setup,
             sql_pool,
+            #[cfg(test)]
+            service_user_pause: None,
         }
     }
 
