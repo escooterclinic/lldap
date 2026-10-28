@@ -127,3 +127,49 @@ class OwnedFileTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 activation.rollback_preflight(receipt, os.getuid())
         self.assertEqual(package.read_bytes(), b'foreign')
+
+    def test_failure_after_candidate_start_stops_it_before_vendor_restore(self):
+        from unittest.mock import patch
+        package = self.root / 'package'
+        vendor = self.root / 'vendor'
+        package.write_bytes(b'vendor')
+        package.chmod(0o555)
+        state = self.root / 'receipt.json'
+        running = 'vendor'
+        real_save = activation.save_receipt
+        real_remove = activation.remove_owned
+
+        def control(*arguments):
+            nonlocal running
+            if arguments == ('stop',):
+                running = None
+            if arguments == ('start',) and running is None:
+                running = 'candidate' if package.read_bytes() == b'wrapper' else 'vendor'
+            return 'active' if running else 'inactive'
+
+        def divert(operation):
+            if operation == 'add':
+                package.rename(vendor)
+            else:
+                vendor.rename(package)
+
+        def save(path, receipt):
+            if receipt['state'] == 'active_pending_authenticated_controls':
+                raise OSError('injected final receipt failure')
+            real_save(path, receipt)
+
+        with patch.multiple(activation, PACKAGE=package, DIVERTED=vendor), \
+             patch.object(activation, 'preflight', return_value=(
+                 {Path('usr/bin/lldap'): (b'wrapper', 0o555)}, Path('release'), 'postgresql://fixture')), \
+             patch.object(activation, 'ensure_directory'), \
+             patch.object(activation, 'systemctl', side_effect=control), \
+             patch.object(activation, 'backup_postgres', return_value={'fixture': True}), \
+             patch.object(activation, 'change_diversion', side_effect=divert), \
+             patch.object(activation, 'diversion_owned', return_value=True), \
+             patch.object(activation.contract, 'trusted_ancestors'), \
+             patch.object(activation, 'remove_owned', side_effect=lambda path, record: real_remove(path, record, os.getuid())), \
+             patch.object(activation, 'save_receipt', side_effect=save):
+            with self.assertRaisesRegex(OSError, 'injected final receipt'):
+                activation.activate(self.root, 'a' * 64, self.root / 'config', self.root / 'backup',
+                                    '2026-11-30T14:00:00+00:00', receipt_path=state)
+        self.assertEqual(running, 'vendor')

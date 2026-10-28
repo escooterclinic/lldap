@@ -240,9 +240,20 @@ def restore(receipt, receipt_path):
             raise RuntimeError('Diversion no longer matches positive ownership receipt')
         contract.trusted_ancestors(PACKAGE, 0, Path('/'))
         if wrapper:
-            remove_owned(PACKAGE, wrapper)
+            if identity(PACKAGE) != wrapper:
+                raise RuntimeError('Wrapper changed before recovery; refusing interruption')
         elif os.path.lexists(PACKAGE):
             raise RuntimeError('Unrecorded original-path file; refusing rollback')
+        receipt['state'] = 'restoring_baseline'
+        if not receipt.get('mask_owned'):
+            systemctl('mask', '--runtime')
+            receipt['mask_owned'] = True
+            save_receipt(receipt_path, receipt)
+        systemctl('stop')
+        if systemctl('is-active') == 'active':
+            raise RuntimeError('Candidate did not stop; baseline recovery refused')
+        if wrapper:
+            remove_owned(PACKAGE, wrapper)
         change_diversion('remove')
         receipt['diversion_added'] = False
         save_receipt(receipt_path, receipt)
@@ -330,9 +341,6 @@ def main():
         rollback_preflight(receipt)
         if 'masked' in systemctl('show', '--property=UnitFileState', '--value'):
             raise RuntimeError('Preexisting mask is not owned by this rollback')
-        systemctl('mask', '--runtime')
-        systemctl('stop')
-        receipt['mask_owned'] = True
         restore(receipt, args.receipt)
 
 
