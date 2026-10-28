@@ -9,6 +9,7 @@ from pathlib import Path
 import platform
 import re
 import subprocess
+import sys
 
 
 def inspect(artifact, expected):
@@ -42,14 +43,29 @@ def inspect(artifact, expected):
                   'needed': needed, 'abi_metadata': 'compatible', 'target_version_executed': False}
 
 
+def kernel_seal(descriptor):
+    if sys.platform != 'linux' or platform.machine() != 'x86_64':
+        raise RuntimeError('Reviewed sealing ABI requires Linux x86_64')
+    # Stable Linux UAPI: include/uapi/linux/fcntl.h; F_LINUX_SPECIFIC_BASE is1024.
+    # https://github.com/torvalds/linux/blob/master/include/uapi/linux/fcntl.h
+    add = getattr(fcntl, 'F_ADD_SEALS', 1033)
+    get = getattr(fcntl, 'F_GET_SEALS', 1034)
+    flags = (getattr(fcntl, 'F_SEAL_SEAL', 0x0001)
+             | getattr(fcntl, 'F_SEAL_SHRINK', 0x0002)
+             | getattr(fcntl, 'F_SEAL_GROW', 0x0004)
+             | getattr(fcntl, 'F_SEAL_WRITE', 0x0008))
+    fcntl.fcntl(descriptor, add, flags)
+    if fcntl.fcntl(descriptor, get) & flags != flags:
+        raise RuntimeError('Kernel did not retain every required artifact seal')
+
+
 def sealed_bytes(data):
     descriptor = os.memfd_create('lldap-reviewed-version', os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING)
     try:
         with os.fdopen(os.dup(descriptor), 'wb') as stream:
             stream.write(data)
             stream.flush()
-        fcntl.fcntl(descriptor, fcntl.F_ADD_SEALS,
-                    fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL)
+        kernel_seal(descriptor)
         return descriptor
     except BaseException:
         os.close(descriptor)

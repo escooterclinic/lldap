@@ -8,6 +8,9 @@ import tempfile
 
 HERE = Path(__file__).resolve().parent
 CASES = (
+    ('kernel-artifact-seals', 'preflight_artifact.py',
+     '        kernel_seal(descriptor)', '        pass',
+     'test_sealed_artifact.SealedArtifactTests.test_kernel_seals_hold_when_python_does_not_export_constants'),
     ('native-config-ancestor', 'activate.py',
      '            if (not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, service_uid)\n                    or info.st_mode & 0o022):',
      '            if False:',
