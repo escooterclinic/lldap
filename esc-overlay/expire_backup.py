@@ -5,9 +5,11 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import stat
 import tempfile
+import uuid
 
 
 def parse_time(value):
@@ -88,11 +90,29 @@ def expire(receipt_path, backup, deadline, *, owner_uid=0, trust_root=Path('/'))
     entry = receipt.get('backup', {})
     if (entry.get('path') != str(backup) or entry.get('retain_until') != deadline
             or entry.get('format') != 'postgresql-custom'
-            or entry.get('status') not in ('verified', 'failed_dump', 'failed_readback', 'incomplete_dump', 'incomplete_readback')):
+            or entry.get('status') not in ('verified', 'failed_dump', 'failed_readback', 'incomplete_dump', 'incomplete_readback', 'expiration_pending', 'expired_deleted')):
         raise RuntimeError('Archive ownership or deadline mismatch')
+    pending = entry.get('status') == 'expiration_pending'
+    recorded = entry.get('status') in ('expiration_pending', 'expired_deleted')
+    target = {'path': str(backup), 'identity': entry.get('identity'), 'retain_until': deadline}
+    intent = entry.get('expiration', {})
+    if recorded and (intent.get('state') != entry['status'] or intent.get('target') != target
+                     or not re.fullmatch('[0-9a-f]{32}', str(intent.get('operation_id', '')))
+                     or not valid_owned_identity(entry.get('identity'), owner_uid)):
+        raise RuntimeError('Unknown expiration intent; refusing reconciliation')
+    if recorded and not os.path.lexists(backup):
+        return finish_expiration(receipt_path, receipt, 'owned_absence_reconciled')
+    if recorded and not pending:
+        raise RuntimeError('Archive reappeared after recorded deletion; refusing action')
     actual = identity(backup)
     if actual != entry.get('identity') or actual['uid'] != owner_uid or actual['mode'] != 0o600:
         raise RuntimeError('Foreign or changed archive; refusing deletion')
+    if not pending:
+        entry['status'] = 'expiration_pending'
+        entry['expiration'] = {'state': 'expiration_pending', 'target': target,
+                               'operation_id': uuid.uuid4().hex, 'intent_at': now_utc().isoformat()}
+        persist_expiration_intent(receipt_path, receipt)
+    operation_id = entry['expiration']['operation_id']
     parent = os.open(backup.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         info = os.stat(backup.name, dir_fd=parent, follow_symlinks=False)
@@ -100,12 +120,38 @@ def expire(receipt_path, backup, deadline, *, owner_uid=0, trust_root=Path('/'))
             raise RuntimeError('Archive replaced before deletion')
         os.unlink(backup.name, dir_fd=parent)
         os.fsync(parent)
+    except OSError:
+        raise RuntimeError('Expiration outcome requires reconciliation; operation_id=' + operation_id) from None
     finally:
         os.close(parent)
+    return finish_expiration(receipt_path, receipt, 'positive_unlink')
+
+
+def valid_owned_identity(value, owner_uid):
+    return (isinstance(value, dict)
+            and set(value) == {'device', 'inode', 'uid', 'mode', 'sha256'}
+            and all(type(value[key]) is int for key in ('device', 'inode', 'uid', 'mode'))
+            and value['uid'] == owner_uid and value['mode'] == 0o600
+            and re.fullmatch('[0-9a-f]{64}', str(value['sha256'])) is not None)
+
+
+def persist_expiration_intent(path, receipt):
+    save_receipt(path, receipt)
+
+
+def finish_expiration(path, receipt, disposition):
+    entry = receipt['backup']
+    operation_id = entry['expiration']['operation_id']
     entry['status'] = 'expired_deleted'
     entry['expired_at'] = now_utc().isoformat()
-    save_receipt(receipt_path, receipt)
-    return {'state': 'expired_owned_backup_deleted', 'path': str(backup)}
+    entry['expiration']['state'] = 'expired_deleted'
+    entry['expiration']['disposition'] = disposition
+    try:
+        save_receipt(path, receipt)
+    except OSError:
+        raise RuntimeError('Archive absent; durable expiration intent requires reconciliation; operation_id=' + operation_id) from None
+    return {'state': 'expired_owned_backup_deleted', 'path': entry['path'],
+            'operation_id': operation_id, 'disposition': disposition}
 
 
 def main():

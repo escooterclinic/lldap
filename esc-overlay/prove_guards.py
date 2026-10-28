@@ -8,6 +8,9 @@ import tempfile
 
 HERE = Path(__file__).resolve().parent
 CASES = (
+    ('backup-expiry-pre-unlink-journal', 'expire_backup.py',
+     '        persist_expiration_intent(receipt_path, receipt)', '        pass',
+     'test_expire_backup.ExpirationTests.test_post_unlink_save_failure_retains_durable_intent_and_reconciles'),
     ('backup-expiry-early', 'expire_backup.py',
      '    if now_utc() < parse_time(deadline):', '    if False:',
      'test_expire_backup.ExpirationTests.test_expired_owned_backup_fires_and_refuses_foreign_or_early'),
