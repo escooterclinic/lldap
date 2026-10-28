@@ -1,6 +1,7 @@
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -14,7 +15,7 @@ spec.loader.exec_module(prepare)
 class PreparationTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self.tmp.name)
+        self.root = Path(self.tmp.name).resolve()
         self.artifact = self.root / 'reviewed-binary'
         self.artifact.write_bytes(b'reviewed binary bytes')
         self.digest = hashlib.sha256(self.artifact.read_bytes()).hexdigest()
@@ -24,7 +25,7 @@ class PreparationTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def stage(self, digest=None):
-        return prepare.prepare(self.output, self.artifact, digest or self.digest, '0.6.3', 'a' * 64)
+        return prepare.prepare(self.output, self.artifact, digest or self.digest, '0.6.3', 'a' * 64, 'b' * 64, {})
 
     def test_bundle_has_fixed_owner_paths_and_no_activation(self):
         result = self.stage()
@@ -63,6 +64,28 @@ class PreparationTests(unittest.TestCase):
         linked = self.root / 'linked'
         linked.symlink_to(self.artifact)
         self.artifact = linked
+        with self.assertRaises(ValueError):
+            self.stage()
+        self.assertFalse(self.output.exists())
+
+    def test_directory_modes_and_manifest_ignore_permissive_umask(self):
+        old = os.umask(0)
+        try:
+            result = self.stage()
+        finally:
+            os.umask(old)
+        self.assertEqual(self.output.stat().st_mode & 0o777, 0o700)
+        directories = [path for path in self.output.rglob('*') if path.is_dir()]
+        self.assertTrue(directories)
+        for path in directories:
+            self.assertEqual(path.stat().st_mode & 0o777, 0o755)
+        self.assertEqual({row['path'] for row in result['directories']},
+                         {str(path.relative_to(self.output)) for path in directories})
+
+    def test_symlink_staging_parent_is_refused(self):
+        linked = self.root / 'linked-parent'
+        linked.symlink_to(self.root, target_is_directory=True)
+        self.output = linked / 'new-bundle'
         with self.assertRaises(ValueError):
             self.stage()
         self.assertFalse(self.output.exists())
