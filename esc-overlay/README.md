@@ -1,78 +1,33 @@
-# Business package overlay — staging source only
+# Business package overlay
 
-This single staging overlay leaves the installed executable and unit untouched.
-It is not an availability-preserving activation mechanism.
-`runtime.py` selects a reviewed immutable release only while the installed
-package version AND binary digest match the reviewed baseline. Only with the same explicitly pinned vendor unit and drop-in filename/hash set,
-a changed package binary/version or unsafe candidate selects the current package
-binary with atomic-API `PENDING`. Unit/drop-in additions, removal or content drift,
-untrusted ancestry, or an unavailable trusted unit contract refuse execution.
-There is no availability promise across unit drift. It never calls
-legacy `createUser` as a fallback for service provisioning. Even selecting the
-reviewed fork reports `PENDING_LIVE_PROOF`, not global readiness.
+The current production direction is the reviewed-source
+[package-diversion owner](ACTIVATION.md). It is not deployed. `prepare.py
+--package-diversion` stages a fixed isolated-Python wrapper and reviewed release;
+`activate.py` owns the exact diversion, created-file receipt and checked rollback.
+Vendor units/drop-ins remain untouched and all original argv pass through.
+Current package updates remain effective; a changed package/unit contract falls
+back to the current vendor binary with atomic API PENDING. No nonatomic service
+provisioning fallback exists. Future atomic-feature convergence is not claimed.
 
-The existing native command remains `run --config-file
-/etc/lldap/lldap_config.toml`. This is the inspected deployment's command, not a
-promise about uninspected future package-unit arguments. The package manager,
-updater script, existing unit properties/drop-ins and auth database are not
-modified. A future unit/configuration change requires fresh owner review.
-Automatic future convergence of the new atomic API is NOT delivered here.
+The earlier default staging mode generates a unit override with fixed baseline
+arguments. It remains source-only and MUST NOT be used for production activation.
+Its `runtime.py` refuses unit drift; the package-diversion runtime catches a
+changed contract and safely passes the current unit's argv to the trusted current
+vendor. Unsupported ownership or an unsafe vendor path still refuses execution.
 
-## What the source does
+Every staged directory has explicit modes independent of umask. Runtime/bundle
+ancestor ownership, regular files and immutable modes are checked. The manifest
+records desired file hashes/modes and directories; it establishes no ownership
+of preexisting installed content. Only actual activation receipts can authorize
+rollback deletion. Existing output, foreign diversions and unknown files are
+never adopted.
 
-`prepare.py` accepts an explicit reviewed artifact digest, baseline package
-version/digest, vendor unit SHA256, explicit drop-in filename/hash JSON map
-(`--baseline-dropins-manifest`) and a NEW staging output directory. It captures the checked
-artifact bytes, writes the versioned desired file tree and named unit drop-in,
-and emits a desired-files digest/mode manifest including explicit directory
-modes. The staging root is0700; every internal directory is0755 independent of
-umask. Symlink or unsafe staging ancestors are refused. Existing output and symlinks
-are refused. It creates no service, account, key, timer, grant or live file.
-
-The generated drop-in clears only `ExecStart`, then invokes the owner runtime
-under the baseline unit's existing user, working directory and other properties.
-The runtime accepts no caller arguments. Runtime executable/config/unit ancestors
-must be root-owned directories without group/world write access. Fixed service
-drop-in directories are compared against the recorded map, excluding only this
-overlay's exact named drop-in. An overriding `/etc` or `/run` unit fragment refuses
-startup. Activation must verify that this supported package-unit layout really
-represents the effective target command; unsupported systemd search paths or
-configuration are not silently adopted. Configuration allows exactly six
-version/hash/drop-in contract fields; callers cannot supply an executable path.
-
-Tests: `python3 -m unittest discover -s esc-overlay -p 'test_*.py' -q` — fifteen tests. `python3 esc-overlay/prove_guards.py` additionally
-requires four independent guard-removal mutations to fail behaviorally. They exercise package upgrades/content changes,
-unsafe or symlinked candidates/configuration, fixed argv, exact staging hashes,
-existing-output preservation and no activation. Fixture modes are explicit so
-the runner's group-write umask cannot change the intended safety predicate.
-
-## Activation and rollback are NOT implemented by the staging helper
-
-This overlay is pending independent Python/security review and a source-owned
-activation/rollback implementation. Do not copy it into production as an ad hoc
-fix. The staging manifest describes intended files; it does NOT establish
-ownership of existing installed files or authorize their deletion.
-
-The root orchestrator must first merge/gate the reviewed source, rebuild the
-exact final source and verify the final artifact/schema hashes, target ABI and
-safe target `--version`. Revalidate actual package/unit/updater metadata,
-canonical registered node/guest/pmxcfs binding and an independently working
-parent-root-to-guest fallback. No guest key grant follows from that fallback.
-
-Only after those proofs may the owner activation path record actual created
-file identities/digests, mask/stop the service, install the versioned release
-and named drop-in, reload and restore availability as a hard exit condition.
-Capture ownership before any later rollback delete; never delete by a directory
-prefix or a staging filename alone. Rollback removes only positively owned
-unchanged overlay files and returns to the package path, preserving directory
-users, credentials, memberships/history and schema. It does not restore the
-database over unrelated changes or enable people.
-
-The final native admin/LDAP human controls and isolated atomic-creation
-allowed/denied controls remain required. Every credential provisioner must
-require the new atomic mutation and committed Bot marker; pending capability
-must never trigger nonatomic user creation. No new cadence, timeout, retention
-or grant is configured by this overlay.
-
-Production direction: [package diversion activation](ACTIVATION.md) supersedes
-the unit-override staging proposal. It is pending review and live controls.
+Linux tests include a real isolated Debian package install/diversion/update
+with changed unit arguments, API PENDING and current-package availability;
+owned rollback; injected interruption recovery; PostgreSQL backup secrecy and
+explicit retention; parent safety; and artifact/config selection. Run
+`python3 esc-overlay/prove_guards.py` on the Linux runner: all tests plus seven
+independent guard-removal mutations must pass. The separate private PostgreSQL17
+native gate verifies real service creation/rollback/concurrent readback and a
+consistent PostgreSQL custom archive. These are source/lab proofs, not deployed
+coverage or credential/grant approval.
