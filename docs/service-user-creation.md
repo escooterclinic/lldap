@@ -80,3 +80,27 @@ A source build, unit pass or archive alone is not a live activation or a proof
 of unattended updater convergence. Do not deploy until the actual updater
 preserves this owner artifact reproducibly. All cadence, retention and grants
 not specifically approved remain unchanged.
+
+## Verification record (2026-10-28)
+
+The complete native SQL-backend and GraphQL suites passed on a Linux x86_64
+runner with Rust1.91.0:65 SQL tests and15 GraphQL tests, zero failures/skips.
+The source mechanism was independently reviewed at
+`cd1285e18b61693ec00a5da71ad940afc5d25456`, with no remaining code-level findings.
+The existing SQLite fixture/datastore semantics were retained deliberately.
+
+`bash scripts/mutate-atomic-service-user.sh` first repeats that80-test positive
+control, then applies each checked patch to a separate temporary source copy.
+Both actual behavior tests fail when their safety policy is removed:
+
+- `bot-marker-policy`: removing both literal-Bot checks allows a different
+  group's UUID; the non-Bot negative behavior test fails.
+- `atomic-user-marker`: committing user creation separately before the marker
+  transaction leaves an unmarked user after injected membership failure; the
+  actual database rollback behavior test fails.
+
+The harness requires the native test-failure summary and expected test name;
+a compiler error or absent test is not accepted as a killed mutant. Both
+mutations were killed on the Linux runner. The reviewed checkout is never
+mutated. This verifies the source mechanism, not any downstream service grant,
+managed key/profile enrollment, directory deployment or programme closure.
