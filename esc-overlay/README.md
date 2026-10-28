@@ -73,3 +73,6 @@ allowed/denied controls remain required. Every credential provisioner must
 require the new atomic mutation and committed Bot marker; pending capability
 must never trigger nonatomic user creation. No new cadence, timeout, retention
 or grant is configured by this overlay.
+
+Production direction: [package diversion activation](ACTIVATION.md) supersedes
+the unit-override staging proposal. It is pending review and live controls.

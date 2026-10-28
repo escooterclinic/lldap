@@ -42,9 +42,13 @@ def trusted_ancestors(path, owner_uid, trust_root):
         current = current.parent
 
 
-DROPIN_DIRS = tuple(Path(path) for path in (
-    '/etc/systemd/system/lldap.service.d', '/run/systemd/system/lldap.service.d',
-    '/usr/local/lib/systemd/system/lldap.service.d', '/usr/lib/systemd/system/lldap.service.d'))
+UNIT_DIRS = tuple(Path(path) for path in (
+    '/etc/systemd/system.control', '/run/systemd/system.control', '/run/systemd/transient',
+    '/run/systemd/generator.early', '/etc/systemd/system', '/run/systemd/system',
+    '/run/systemd/generator', '/usr/local/lib/systemd/system', '/usr/lib/systemd/system',
+    '/run/systemd/generator.late'))
+DROPIN_DIRS = tuple(base / name for base in UNIT_DIRS
+                   for name in ('lldap.service.d', 'service.d'))
 OWN_DROPIN = Path('/etc/systemd/system/lldap.service.d/zz-esc-atomic-service-user.conf')
 
 
@@ -80,6 +84,11 @@ def verify_dropins(config, directories, owner_uid, trust_root):
 def select_binary(release, package, package_version, *, owner_uid=0,
                   vendor_unit=Path('/usr/lib/systemd/system/lldap.service'),
                   trust_root=Path('/'), dropin_dirs=DROPIN_DIRS):
+    if trust_root == Path('/') and vendor_unit == Path('/usr/lib/systemd/system/lldap.service'):
+        for base in UNIT_DIRS:
+            fragment = base / 'lldap.service'
+            if fragment != vendor_unit and os.path.lexists(fragment):
+                raise RuntimeError('Overridden vendor unit requires owner review')
     for path in (package, vendor_unit, release / 'deployment.json'):
         trusted_ancestors(path, owner_uid, trust_root)
     if not owned_regular(package, owner_uid) or not owned_regular(vendor_unit, owner_uid):

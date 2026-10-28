@@ -8,6 +8,15 @@ import tempfile
 
 HERE = Path(__file__).resolve().parent
 CASES = (
+    ('rollback-file-ownership', 'activate.py',
+     "    if (not stat.S_ISREG(info.st_mode) or info.st_uid != owner_uid\n            or identity(path) != record):", "    if False:",
+     'test_activation.OwnedFileTests.test_changed_or_replaced_file_is_never_deleted'),
+    ('rollback-before-interruption', 'activate.py',
+     "or identity(PACKAGE) != wrapper:", "or False:",
+     'test_activation.OwnedFileTests.test_rollback_refuses_changed_wrapper_before_interrupting'),
+    ('argv-passthrough', 'divert_runtime.py',
+     "    return ['/usr/bin/lldap', *arguments]", "    return ['/usr/bin/lldap', 'run']",
+     'test_divert_runtime.DivertRuntimeTests.test_argv_is_passed_through_exactly'),
     ('dropin-contract', 'runtime.py',
      '    if observed != expected:', '    if False:',
      'test_runtime.RuntimeSelectionTests.test_dropin_addition_removal_and_content_drift_refuse_execution'),

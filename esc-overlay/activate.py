@@ -205,6 +205,8 @@ def preflight(bundle, manifest_sha, database, backup, retain_until):
     selected, _ = contract.select_binary(bundle / release, PACKAGE, version)
     if selected != bundle / release / 'lldap':
         raise RuntimeError('Reviewed baseline package/unit contract is not current')
+    if systemctl('show', '--property=FragmentPath', '--value') != '/usr/lib/systemd/system/lldap.service':
+        raise RuntimeError('Effective package unit fragment is not the verified vendor path')
     if systemctl('is-active') != 'active':
         raise RuntimeError('An independently healthy baseline service is required')
     if 'masked' in systemctl('show', '--property=UnitFileState', '--value'):
@@ -216,6 +218,19 @@ def preflight(bundle, manifest_sha, database, backup, retain_until):
     if os.path.lexists(backup):
         raise RuntimeError('Unsafe database or preexisting backup')
     return files, release, database_url
+
+
+def rollback_preflight(receipt, owner_uid=0):
+    if receipt.get('format') != 'lldap-diversion-owner-v1' or not receipt.get('diversion_added'):
+        raise RuntimeError('No active owned diversion in this receipt')
+    if not diversion_owned():
+        raise RuntimeError('Exact LOCAL diversion ownership is not current')
+    wrapper = receipt.get('files', {}).get(str(PACKAGE))
+    if not wrapper or not contract.owned_regular(PACKAGE, owner_uid) or identity(PACKAGE) != wrapper:
+        raise RuntimeError('Owned unchanged wrapper required before interruption')
+    contract.trusted_ancestors(DIVERTED, owner_uid, Path('/') if owner_uid == 0 else DIVERTED.parent)
+    if not contract.owned_regular(DIVERTED, owner_uid):
+        raise RuntimeError('Current vendor executable is not trusted')
 
 
 def restore(receipt, receipt_path):
@@ -243,9 +258,9 @@ def restore(receipt, receipt_path):
     # Release files are intentionally retained: no destructive directory sweep.
 
 
-def activate(bundle, manifest_sha, database, backup, retain_until):
+def activate(bundle, manifest_sha, database, backup, retain_until, *, receipt_path=None):
     files, release, database_url = preflight(bundle, manifest_sha, database, backup, retain_until)
-    state = Path('/var/lib/lldap-esc/deployments') / (manifest_sha + '.json')
+    state = receipt_path or Path('/var/lib/lldap-esc/deployments') / (manifest_sha + '.json')
     ensure_directory(state.parent)
     descriptor = os.open(state, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
     os.close(descriptor)
@@ -312,6 +327,9 @@ def main():
         receipt = json.loads(args.receipt.read_text())
         if receipt.get('format') != 'lldap-diversion-owner-v1':
             raise RuntimeError('Unknown deployment receipt')
+        rollback_preflight(receipt)
+        if 'masked' in systemctl('show', '--property=UnitFileState', '--value'):
+            raise RuntimeError('Preexisting mask is not owned by this rollback')
         systemctl('mask', '--runtime')
         systemctl('stop')
         receipt['mask_owned'] = True

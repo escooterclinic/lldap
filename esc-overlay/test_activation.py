@@ -64,3 +64,66 @@ class OwnedFileTests(unittest.TestCase):
         self.assertFalse(receipt['automatic_cleanup'])
         self.assertNotIn('fixture-secret', str(receipt))
         self.assertEqual(backup.stat().st_mode & 0o777, 0o600)
+
+    def test_interruption_failure_restores_baseline_package_and_availability(self):
+        from unittest.mock import patch
+        package = self.root / 'package'
+        vendor = self.root / 'vendor'
+        package.write_bytes(b'original vendor')
+        package.chmod(0o555)
+        receipt = self.root / 'receipt.json'
+        events = []
+        active = True
+
+        def control(*arguments):
+            nonlocal active
+            events.append(arguments)
+            if arguments == ('stop',):
+                active = False
+            if arguments == ('start',):
+                active = True
+            if arguments == ('is-active',):
+                return 'active' if active else 'inactive'
+            return ''
+
+        def divert(operation):
+            events.append(('diversion', operation))
+            if operation == 'add':
+                package.rename(vendor)
+            else:
+                vendor.rename(package)
+
+        with patch.multiple(activation, PACKAGE=package, DIVERTED=vendor), \
+             patch.object(activation, 'preflight', return_value=(
+                 {Path('usr/bin/lldap'): (b'wrapper', 0o555)}, Path('release'), 'postgresql://fixture')), \
+             patch.object(activation, 'ensure_directory'), \
+             patch.object(activation, 'systemctl', side_effect=control), \
+             patch.object(activation, 'backup_postgres', return_value={'fixture': True}), \
+             patch.object(activation, 'change_diversion', side_effect=divert), \
+             patch.object(activation, 'diversion_owned', return_value=True), \
+             patch.object(activation.contract, 'trusted_ancestors'), \
+             patch.object(activation, 'create_owned', side_effect=OSError('injected wrapper write failure')):
+            with self.assertRaisesRegex(OSError, 'injected wrapper'):
+                activation.activate(self.root, 'a' * 64, self.root / 'config', self.root / 'backup',
+                                    '2026-11-30T14:00:00+00:00', receipt_path=receipt)
+        self.assertEqual(package.read_bytes(), b'original vendor')
+        self.assertFalse(vendor.exists())
+        self.assertTrue(active)
+        self.assertIn(('unmask', '--runtime'), events)
+
+    def test_rollback_refuses_changed_wrapper_before_interrupting(self):
+        from unittest.mock import patch
+        package = self.root / 'package'
+        vendor = self.root / 'vendor'
+        vendor.write_bytes(b'vendor')
+        vendor.chmod(0o555)
+        record = activation.create_owned(package, b'wrapper', 0o555)
+        package.chmod(0o755)
+        package.write_bytes(b'foreign')
+        receipt = {'format': 'lldap-diversion-owner-v1', 'diversion_added': True,
+                   'files': {str(package): record}}
+        with patch.multiple(activation, PACKAGE=package, DIVERTED=vendor), \
+             patch.object(activation, 'diversion_owned', return_value=True):
+            with self.assertRaises(RuntimeError):
+                activation.rollback_preflight(receipt, os.getuid())
+        self.assertEqual(package.read_bytes(), b'foreign')
