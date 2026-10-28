@@ -8,6 +8,16 @@ import tempfile
 
 HERE = Path(__file__).resolve().parent
 CASES = (
+    ('backup-expiry-early', 'expire_backup.py',
+     '    if now_utc() < parse_time(deadline):', '    if False:',
+     'test_expire_backup.ExpirationTests.test_expired_owned_backup_fires_and_refuses_foreign_or_early'),
+    ('backup-expiry-ownership', 'expire_backup.py',
+     "    if actual != entry.get('identity') or actual['uid'] != owner_uid or actual['mode'] != 0o600:",
+     '    if False:',
+     'test_expire_backup.ExpirationTests.test_expired_owned_backup_fires_and_refuses_foreign_or_early'),
+    ('backup-expiry-receipt', 'expire_backup.py',
+     "    if record['uid'] != owner_uid or record['mode'] != 0o600:", '    if False:',
+     'test_expire_backup.ExpirationTests.test_expired_owned_backup_fires_and_refuses_foreign_or_early'),
     ('kernel-artifact-seals', 'preflight_artifact.py',
      '        kernel_seal(descriptor)', '        pass',
      'test_sealed_artifact.SealedArtifactTests.test_kernel_seals_hold_when_python_does_not_export_constants'),
