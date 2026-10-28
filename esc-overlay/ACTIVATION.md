@@ -27,14 +27,14 @@ there is no directory sweep, database restore or automatic cleanup.
 
 ## Target facts and backup decision still required
 
-Fresh 2026-10-28 CT170 native config/process observation established PostgreSQL,
-not SQLite: `lldap-db.ha-nonhttp.fiszu.com:5433`, database `lldap`. An authenticated
-read-only `SHOW server_version_num` returned170011. Native pg_dump and pg_restore
-are17.11. Prior SQLite unit tests establish source behavior only. The mandatory
+The deployment uses PostgreSQL, not the SQLite unit-test fixture. Native
+config/process observations, exact endpoint/database and version readback are
+kept in the private operational record. Native pg_dump/pg_restore must match
+the actual server major version. Prior SQLite unit tests establish source behavior only. The mandatory
 private PostgreSQL17 test covers marker policy, trigger-induced complete
 rollback and concurrent-reader invisibility on the actual backend family.
 
-The native config path is `/etc/lldap/lldap_config.toml`; the owner verifies the
+The supported native config path is `/etc/lldap/lldap_config.toml`; the owner verifies the
 running process actually names it and honors its existing `LLDAP_DATABASE_URL`
 environment override if present. Credential material stays in process memory
 and child PG environment, never command arguments, receipts or diagnostics.
@@ -42,8 +42,8 @@ The consistent PostgreSQL custom archive is created exclusively0600 and checked
 with pg_restore list readback. Unsupported DSN options fail closed.
 
 A NEW exact backup path and explicit timezone-qualified future retention
-deadline require operator approval. The November3 OIDC rollback retention is
-NOT authorization for this CT170 backup. No default, timer or deletion is
+deadline require operator approval. Retention approved for unrelated rollback
+material does not authorize this backup. No default, timer or deletion is
 introduced. The proposed directory is `/var/lib/lldap-esc/backups`; the final
 filename includes the reviewed bundle digest. Its parent must already exist
 as an approved root-owned safe directory before activation. No backup has been
@@ -51,9 +51,9 @@ created by this source preparation.
 
 ## Root orchestration and hard exit conditions
 
-Before interruption, root revalidates the registered esc02/CT170/pmxcfs binding
-and existing independent raw-key parent-root→pct170 fallback in the archived
-NCC preflight record. No CT170 key grant follows from the parent fallback.
+Before interruption, root revalidates the registered node/guest/pmxcfs binding
+and existing independent raw-key parent-root→guest fallback in the private
+preflight record. No guest key grant follows from the parent fallback.
 Verify current native admin and LDAP controls before acting; refresh the actual
 package, effective unit, drop-in contract, DB authority and host-key bindings.
 Prepare the reviewed bundle and read its digest back. Source-owned `preflight_artifact.py`

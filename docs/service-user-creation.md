@@ -45,7 +45,7 @@ and immutable marker UUID. Existing-name collisions do not adopt or relabel user
 and GraphQL crate suites. When cargo is absent on a disposable runner, it
 bootstraps Rust1.91.0 using the vendor installer into that job's own directories,
 without changing system toolchains or shell profiles. The existing SQL backend and SQLite unit fixtures are retained; no datastore
-migration occurs. Fresh CT170 native config/process reads established its live
+migration occurs. Fresh native config/process reads established the deployment live
 authority is PostgreSQL17.11, not SQLite. `scripts/test-service-postgres.sh`
 requires a private run-owned PostgreSQL17 cluster and explicitly executes the
 otherwise ignored backend-specific rollback/concurrent-reader test.
@@ -66,7 +66,7 @@ that fallback or justify an unbounded restart through one's own access rail.
 Mark the service intentionally off/mask it before stopping and taking any
 rollback database snapshot; name its restarter. Keep the original binary,
 metadata, unit/configuration/assets and a consistent existing-database backup.
-For CT170 use a consistent native PostgreSQL custom archive; no live SQLite
+For the PostgreSQL deployment use a consistent native custom archive; no live SQLite
 copy is applicable. Preserve all
 existing users, credentials, memberships, identities and schema version.
 
@@ -94,7 +94,7 @@ runner with Rust1.91.0:65 SQL tests and15 GraphQL tests, zero failures/skips.
 The source mechanism was independently reviewed at
 `cd1285e18b61693ec00a5da71ad940afc5d25456`, with no remaining code-level findings.
 The existing SQLite fixture semantics were retained deliberately. This record
-does not identify the production datastore; CT170 is PostgreSQL as established
+does not identify the production datastore; the deployment is PostgreSQL as established
 by later native same-session reads.
 
 `bash scripts/mutate-atomic-service-user.sh` first repeats that80-test positive
