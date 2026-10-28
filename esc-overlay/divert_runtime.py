@@ -25,7 +25,7 @@ def select(release, vendor, version, *, owner_uid=0, trust_root=Path('/'), **con
     try:
         return contract.select_binary(release, vendor, version,
                                       owner_uid=owner_uid, trust_root=trust_root, **contract_options)
-    except (RuntimeError, OSError):
+    except contract.ContractDrift:
         return vendor, {'atomic_api': 'PENDING', 'selection': 'vendor_package',
                         'reason': 'reviewed_unit_contract_not_current'}
 

@@ -36,10 +36,18 @@ rollback and concurrent-reader invisibility on the actual backend family.
 
 The supported native config path is `/etc/lldap/lldap_config.toml`; the owner verifies the
 running process actually names it and honors its existing `LLDAP_DATABASE_URL`
-environment override if present. Credential material stays in process memory
+environment override if present. Native config ancestry is opened with anchored
+no-symlink directory descriptors; its declared service UID must match both the
+unit and running process. Root/service-owned configuration is preserved without
+changing existing permissions. Group/world-writable authority refuses the read.
+Preflight requires the reviewed PostgreSQL major17 and schema11; automatic
+datastore migration is not authorized. Credential material stays in process memory
 and child PG environment, never command arguments, receipts or diagnostics.
-The consistent PostgreSQL custom archive is created exclusively0600 and checked
-with pg_restore list readback. Unsupported DSN options fail closed.
+The consistent PostgreSQL custom archive is created exclusively0600. Its
+incomplete inode/mode/path/retention receipt is fsynced before any sensitive
+dump bytes; failed dump/readback states retain positive ownership and hashes.
+Explicit versioned PostgreSQL17 tools prevent mixed-client wrapper selection,
+and pg_restore list readback must pass. Unsupported DSN options fail closed.
 
 A NEW exact backup path and explicit timezone-qualified future retention
 deadline require operator approval. Retention approved for unrelated rollback
@@ -77,3 +85,13 @@ creating the three approved nonhuman identities or issuing any credentials.
 A failed control invokes the owned rollback. The backup is not restored over
 later directory changes. All users, memberships/history and existing schema are
 preserved. No key, grant, cadence, timeout or unrelated service changes here.
+
+## Reproducible reviewed build
+
+Gate payloads have no Git metadata. `scripts/run-verified-activation-build.sh`
+fetches the explicit reviewed commit from the fixed owning repository into a
+NEW checkout. The owning build script requires clean index/worktree/untracked
+state and exact actual Git-tree equality before output or compilation. It
+records commit/tree from Git, hashes every tracked input and retains full native
+workspace, private PostgreSQL, backup, Python and mutation logs beside the Linux
+artifact/schema/checksums. Caller text alone cannot establish source attribution.

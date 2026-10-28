@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import pwd
 from pathlib import Path
 import stat
 import subprocess
@@ -20,6 +21,8 @@ spec.loader.exec_module(contract)
 PACKAGE = Path('/usr/bin/lldap')
 DIVERTED = Path('/usr/lib/lldap-esc/lldap.distrib')
 SERVICE = 'lldap.service'
+PG_BIN = Path('/usr/lib/postgresql/17/bin')
+REQUIRED_SCHEMA_VERSION = '11'
 ENV = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C', 'LC_ALL': 'C'}
 
 
@@ -72,42 +75,109 @@ def postgres_environment(url):
                   'PGUSER': unquote(parsed.username or ''), 'PGPASSWORD': unquote(parsed.password or '')}
 
 
-def backup_postgres(url, output, retain_until):
+def backup_postgres(url, output, retain_until, *, journal):
     approved_deadline(retain_until)
     environment = postgres_environment(url)
     descriptor = os.open(output, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    phase = 'dump'
+
+    def record(status):
+        info = identity(output)
+        entry = {'path': str(output), 'identity': info, 'sha256': info['sha256'],
+                 'retain_until': retain_until, 'format': 'postgresql-custom',
+                 'status': status, 'automatic_cleanup': False}
+        journal(entry)
+        return entry
+
     try:
-        result = subprocess.run(['/usr/bin/pg_dump', '--format=custom', '--no-password',
+        record('incomplete_dump')  # durable owner journal MUST precede any sensitive dump bytes
+        result = subprocess.run([str(PG_BIN / 'pg_dump'), '--format=custom', '--no-password',
                                  '--file=/proc/self/fd/' + str(descriptor)],
                                 env=environment, pass_fds=(descriptor,), capture_output=True, check=False)
         if result.returncode:
-            raise RuntimeError('PostgreSQL consistent backup failed; no credential-bearing diagnostics emitted')
+            raise RuntimeError('PostgreSQL consistent backup failed; credential diagnostics withheld')
         os.fsync(descriptor)
+        phase = 'readback'
+        record('incomplete_readback')
+        result = subprocess.run([str(PG_BIN / 'pg_restore'), '--list', str(output)],
+                                env=ENV, capture_output=True, check=False)
+        if result.returncode or not result.stdout:
+            raise RuntimeError('PostgreSQL archive readback failed')
+        return record('verified')
+    except BaseException:
+        record('failed_' + phase)
+        raise
     finally:
         os.close(descriptor)
-    result = subprocess.run(['/usr/bin/pg_restore', '--list', str(output)],
-                            env=ENV, capture_output=True, check=False)
-    if result.returncode or not result.stdout:
-        raise RuntimeError('PostgreSQL archive readback failed')
-    return {'path': str(output), 'sha256': sha(output.read_bytes()), 'retain_until': retain_until,
-            'format': 'postgresql-custom', 'automatic_cleanup': False}
+
+
+def native_config_bytes(config, service_uid, trust_root=Path('/')):
+    if not config.is_absolute() or not config.is_relative_to(trust_root):
+        raise RuntimeError('Native config escapes its declared authority')
+    relative = config.relative_to(trust_root)
+    if '..' in relative.parts:
+        raise RuntimeError('Native config traversal is not allowed')
+    parent = os.open(trust_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for part in (*relative.parts[:-1], None):
+            info = os.fstat(parent)
+            if (not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, service_uid)
+                    or info.st_mode & 0o022):
+                raise RuntimeError('Native config ancestor is not owned by root or declared service')
+            if part is not None:
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+                os.close(parent)
+                parent = child
+        descriptor = os.open(relative.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent)
+    finally:
+        os.close(parent)
+    with os.fdopen(descriptor, 'rb') as stream:
+        before = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid not in (0, service_uid)
+                or before.st_mode & 0o022):
+            raise RuntimeError('Native config owner/mode is not trusted')
+        data = stream.read()
+        after = os.fstat(stream.fileno())
+        if (before.st_ino, before.st_size, before.st_mtime_ns) != (after.st_ino, after.st_size, after.st_mtime_ns):
+            raise RuntimeError('Native configuration changed during read')
+        return data
+
+
+def verify_postgres_authority(url):
+    for name in ('pg_dump', 'pg_restore', 'psql'):
+        tool = PG_BIN / name
+        contract.trusted_ancestors(tool, 0, Path('/'))
+        if not contract.owned_regular(tool, 0):
+            raise RuntimeError('Native PostgreSQL17 toolchain is not trusted')
+    query = "SELECT current_setting('server_version_num'); SELECT version FROM metadata"
+    result = subprocess.run([str(PG_BIN / 'psql'), '--no-password', '--no-psqlrc',
+                             '--tuples-only', '--no-align', '--set=ON_ERROR_STOP=1', '--command', query],
+                            env=postgres_environment(url), capture_output=True, text=True, check=False)
+    values = result.stdout.strip().splitlines()
+    if result.returncode or len(values) != 2 or not values[0].isdigit():
+        raise RuntimeError('Positive PostgreSQL version/schema readback unavailable')
+    if int(values[0]) // 10000 != 17 or values[1] != REQUIRED_SCHEMA_VERSION:
+        raise RuntimeError('Datastore major/schema differs from reviewed binary; migration not authorized')
 
 
 def effective_database_url(config, pid):
     if config != Path('/etc/lldap/lldap_config.toml'):
         raise RuntimeError('Only the verified native config path is supported')
-    contract.trusted_ancestors(config, 0, Path('/'))
-    if not contract.owned_regular(config, 0):
-        raise RuntimeError('Native database configuration must be root-owned and not writable by others')
+    service = systemctl('show', '--property=User', '--value')
+    if service != 'lldap':
+        raise RuntimeError('Declared service identity is not the verified native account')
+    service_uid = pwd.getpwnam(service).pw_uid
+    if (Path('/proc') / str(pid)).stat().st_uid != service_uid:
+        raise RuntimeError('Running subject UID does not match declared service identity')
     arguments = (Path('/proc') / str(pid) / 'cmdline').read_bytes().split(b'\0')
     if b'--config-file' not in arguments or arguments[arguments.index(b'--config-file') + 1] != bytes(config):
         raise RuntimeError('Running subject does not positively name the verified config')
     environment = (Path('/proc') / str(pid) / 'environ').read_bytes().split(b'\0')
     overrides = [entry.split(b'=', 1)[1].decode() for entry in environment
                  if entry.startswith(b'LLDAP_DATABASE_URL=')]
-    configured = tomllib.loads(config.read_text()).get('database_url')
+    configured = tomllib.loads(native_config_bytes(config, service_uid).decode()).get('database_url')
     url = overrides[0] if overrides else configured
-    postgres_environment(url)  # validate without printing credentials
+    postgres_environment(url)
     return url
 
 
@@ -141,6 +211,11 @@ def save_receipt(path, receipt):
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
+        parent_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
@@ -156,10 +231,10 @@ def change_diversion(operation):
             '--' + operation, str(PACKAGE))
 
 
-def read_bundle(bundle, expected):
+def read_bundle(bundle, expected, *, owner_uid=0, trust_root=Path('/')):
     manifest_path = bundle / 'manifest.json'
-    contract.trusted_ancestors(manifest_path, 0, Path('/'))
-    if not contract.owned_regular(manifest_path, 0) or sha(manifest_path.read_bytes()) != expected:
+    contract.trusted_ancestors(manifest_path, owner_uid, trust_root)
+    if not contract.owned_regular(manifest_path, owner_uid) or sha(manifest_path.read_bytes()) != expected:
         raise RuntimeError('Reviewed bundle manifest mismatch')
     manifest = json.loads(manifest_path.read_text())
     files = {}
@@ -168,13 +243,17 @@ def read_bundle(bundle, expected):
         if relative.is_absolute() or '..' in relative.parts or relative in files:
             raise RuntimeError('Invalid bundle path')
         source = bundle / relative
-        contract.trusted_ancestors(source, 0, Path('/'))
-        if not contract.owned_regular(source, 0):
+        contract.trusted_ancestors(source, owner_uid, trust_root)
+        if not contract.owned_regular(source, owner_uid):
             raise RuntimeError('Untrusted bundle file')
         data = source.read_bytes()
         if sha(data) != row['sha256']:
             raise RuntimeError('Bundle file hash mismatch')
-        files[relative] = (data, int(row['mode'], 8))
+        mode = int(row['mode'], 8)
+        required_mode = 0o444 if relative.name == 'deployment.json' else 0o555
+        if mode != required_mode:
+            raise RuntimeError('Manifest mode differs from the fixed immutable file contract')
+        files[relative] = (data, mode)
     releases = {path.parent for path in files if path.name == 'deployment.json'}
     if len(releases) != 1:
         raise RuntimeError('Expected one explicit release')
@@ -213,8 +292,8 @@ def preflight(bundle, manifest_sha, database, backup, retain_until):
         raise RuntimeError('A preexisting intentional-off mask is not owned')
     pid = int(systemctl('show', '--property=MainPID', '--value'))
     database_url = effective_database_url(database, pid)
-    for path in (database, backup):
-        contract.trusted_ancestors(path, 0, Path('/'))
+    verify_postgres_authority(database_url)
+    contract.trusted_ancestors(backup, 0, Path('/'))
     if os.path.lexists(backup):
         raise RuntimeError('Unsafe database or preexisting backup')
     return files, release, database_url
@@ -295,7 +374,10 @@ def activate(bundle, manifest_sha, database, backup, retain_until, *, receipt_pa
             raise RuntimeError('Intentional-off guard failed')
         receipt['backup_intent'] = {'path': str(backup), 'retain_until': retain_until}
         save_receipt(state, receipt)
-        receipt['backup'] = backup_postgres(database_url, backup, retain_until)
+        def journal_backup(entry):
+            receipt['backup'] = entry
+            save_receipt(state, receipt)
+        receipt['backup'] = backup_postgres(database_url, backup, retain_until, journal=journal_backup)
         save_receipt(state, receipt)
         change_diversion('add')
         receipt['diversion_added'] = True

@@ -20,6 +20,29 @@ class OwnedFileTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_bundle_refuses_special_or_writable_manifest_modes(self):
+        import hashlib
+        import json
+        spec = importlib.util.spec_from_file_location('fixture_prepare', HERE / 'prepare.py')
+        preparation = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(preparation)
+        artifact = self.root / 'candidate'
+        artifact.write_bytes(b'reviewed fixture')
+        artifact_digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+        bundle = self.root / 'bundle'
+        preparation.prepare(bundle, artifact, artifact_digest, '1', 'a' * 64,
+                            'b' * 64, {}, package_diversion=True)
+        path = bundle / 'manifest.json'
+        digest = lambda: hashlib.sha256(path.read_bytes()).hexdigest()
+        options = {'owner_uid': os.getuid(), 'trust_root': self.root}
+        activation.read_bundle(bundle, digest(), **options)
+        manifest = json.loads(path.read_text())
+        manifest['files'][0]['mode'] = '4555'
+        path.chmod(0o644)
+        path.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(RuntimeError, 'Manifest mode'):
+            activation.read_bundle(bundle, digest(), **options)
+
     def test_owned_unchanged_file_can_be_removed(self):
         record = activation.create_owned(self.path, b'owned bytes', 0o555)
         activation.remove_owned(self.path, record, os.getuid())
@@ -45,20 +68,20 @@ class OwnedFileTests(unittest.TestCase):
         backup = self.root / 'snapshot.pgcustom'
         url = 'postgresql://fixture-user:fixture-secret@fixture.invalid:5433/lldap'
         with self.assertRaises(ValueError):
-            activation.backup_postgres(url, backup, '')
+            activation.backup_postgres(url, backup, '', journal=lambda entry: None)
         self.assertFalse(backup.exists())
         calls = []
 
         def execute(arguments, **options):
             calls.append((arguments, options))
-            if arguments[0] == '/usr/bin/pg_dump':
+            if arguments[0].endswith('/pg_dump'):
                 self.assertNotIn('fixture-secret', str(arguments))
                 self.assertEqual(options['env']['PGPASSWORD'], 'fixture-secret')
                 os.write(options['pass_fds'][0], b'fixture pg custom archive')
             return SimpleNamespace(returncode=0, stdout=b'fixture archive table list')
 
         with patch.object(activation.subprocess, 'run', side_effect=execute):
-            receipt = activation.backup_postgres(url, backup, '2026-11-30T14:00:00+00:00')
+            receipt = activation.backup_postgres(url, backup, '2026-11-30T14:00:00+00:00', journal=lambda entry: None)
         self.assertEqual(len(calls), 2)
         self.assertEqual(receipt['format'], 'postgresql-custom')
         self.assertFalse(receipt['automatic_cleanup'])
@@ -173,3 +196,46 @@ class OwnedFileTests(unittest.TestCase):
                 activation.activate(self.root, 'a' * 64, self.root / 'config', self.root / 'backup',
                                     '2026-11-30T14:00:00+00:00', receipt_path=state)
         self.assertEqual(running, 'vendor')
+
+    def test_native_config_uses_declared_service_owner_and_refuses_writable_parent(self):
+        config = self.root / 'lldap_config.toml'
+        config.write_bytes(b'fixture native configuration')
+        config.chmod(0o600)
+        self.assertEqual(activation.native_config_bytes(config, os.getuid(), self.root),
+                         b'fixture native configuration')
+        self.root.chmod(0o777)
+        with self.assertRaises(RuntimeError):
+            activation.native_config_bytes(config, os.getuid(), self.root)
+        self.root.chmod(0o700)
+        config.unlink()
+        config.symlink_to(self.root / 'other')
+        with self.assertRaises(OSError):
+            activation.native_config_bytes(config, os.getuid(), self.root)
+
+    def test_failed_dump_and_readback_retain_positive_partial_backup_receipt(self):
+        import hashlib
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        for failure in ('pg_dump', 'pg_restore'):
+            with self.subTest(failure=failure):
+                backup = self.root / (failure + '.pgcustom')
+                journal = []
+
+                def execute(arguments, **options):
+                    if arguments[0].endswith('/pg_dump'):
+                        self.assertTrue(journal, 'Sensitive dump bytes require a prior durable owner receipt')
+                        self.assertEqual(journal[-1]['status'], 'incomplete_dump')
+                        self.assertEqual(journal[-1]['identity']['inode'], backup.stat().st_ino)
+                        os.write(options['pass_fds'][0], b'partial retained archive')
+                    failed = arguments[0].endswith('/' + failure)
+                    return SimpleNamespace(returncode=int(failed), stdout=b'fixture archive list')
+
+                with patch.object(activation.subprocess, 'run', side_effect=execute):
+                    with self.assertRaises(RuntimeError):
+                        activation.backup_postgres('postgresql://fixture@host/db', backup,
+                                                   '2026-11-30T14:00:00+00:00', journal=journal.append)
+                self.assertTrue(backup.exists())
+                self.assertEqual(journal[-1]['status'], 'failed_' + ('dump' if failure == 'pg_dump' else 'readback'))
+                self.assertEqual(journal[-1]['sha256'], hashlib.sha256(backup.read_bytes()).hexdigest())
+                self.assertEqual(journal[-1]['identity']['inode'], backup.stat().st_ino)
+                self.assertEqual(journal[-1]['retain_until'], '2026-11-30T14:00:00+00:00')

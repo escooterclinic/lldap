@@ -12,6 +12,14 @@ import sys
 FIELDS = {'format', 'baseline_package_version', 'baseline_sha256', 'artifact_sha256', 'baseline_unit_sha256', 'baseline_dropins'}
 
 
+class ContractDrift(RuntimeError):
+    """Trusted native inputs changed; current vendor argv remain authoritative."""
+
+
+class UnsafeContract(RuntimeError):
+    """Ownership or input integrity is not trusted; no executable may be selected."""
+
+
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -30,13 +38,13 @@ def trusted_ancestors(path, owner_uid, trust_root):
     path = path.absolute()
     trust_root = trust_root.absolute()
     if not path.is_relative_to(trust_root):
-        raise RuntimeError('Path escapes trusted root')
+        raise UnsafeContract('Path escapes trusted root')
     current = path.parent
     while True:
         info = current.lstat()
         if not (stat.S_ISDIR(info.st_mode) and info.st_uid == owner_uid
                 and info.st_mode & 0o022 == 0):
-            raise RuntimeError('Executable ancestor is not trusted')
+            raise UnsafeContract('Executable ancestor is not trusted')
         if current == trust_root:
             return
         current = current.parent
@@ -55,13 +63,13 @@ OWN_DROPIN = Path('/etc/systemd/system/lldap.service.d/zz-esc-atomic-service-use
 def verify_dropins(config, directories, owner_uid, trust_root):
     expected = config.get('baseline_dropins')
     if not isinstance(expected, dict):
-        raise RuntimeError('Missing drop-in contract')
+        raise UnsafeContract('Missing drop-in contract')
     for name, value in expected.items():
         path = Path(name)
         if (not path.is_absolute() or path.parent not in directories or path == OWN_DROPIN
                 or path.suffix != '.conf' or not isinstance(value, str)
                 or not re.fullmatch(r'[0-9a-f]{64}', value)):
-            raise RuntimeError('Invalid drop-in contract')
+            raise UnsafeContract('Invalid drop-in contract')
     observed = {}
     for directory in directories:
         if not directory.exists() and not directory.is_symlink():
@@ -75,37 +83,41 @@ def verify_dropins(config, directories, owner_uid, trust_root):
             if path == OWN_DROPIN or path.suffix != '.conf':
                 continue
             if not owned_regular(path, owner_uid):
-                raise RuntimeError('Drop-in file is not trusted')
+                raise UnsafeContract('Drop-in file is not trusted')
             observed[str(path)] = digest(path)
     if observed != expected:
-        raise RuntimeError('Unit drop-in drift requires owner review; execution refused')
+        raise ContractDrift('Unit drop-in drift requires owner review; execution refused')
 
 
 def select_binary(release, package, package_version, *, owner_uid=0,
                   vendor_unit=Path('/usr/lib/systemd/system/lldap.service'),
                   trust_root=Path('/'), dropin_dirs=DROPIN_DIRS):
+    overridden = False
     if trust_root == Path('/') and vendor_unit == Path('/usr/lib/systemd/system/lldap.service'):
         for base in UNIT_DIRS:
             fragment = base / 'lldap.service'
             if fragment != vendor_unit and os.path.lexists(fragment):
-                raise RuntimeError('Overridden vendor unit requires owner review')
+                trusted_ancestors(fragment, owner_uid, trust_root)
+                if not owned_regular(fragment, owner_uid):
+                    raise UnsafeContract('Overriding unit fragment is not trusted')
+                overridden = True
     for path in (package, vendor_unit, release / 'deployment.json'):
         trusted_ancestors(path, owner_uid, trust_root)
     if not owned_regular(package, owner_uid) or not owned_regular(vendor_unit, owner_uid):
-        raise RuntimeError('Package executable or unit is not trusted')
+        raise UnsafeContract('Package executable or unit is not trusted')
     config_path = release / 'deployment.json'
     if not owned_regular(config_path, owner_uid):
-        raise RuntimeError('Owner unit contract configuration is not trusted')
+        raise UnsafeContract('Owner unit contract configuration is not trusted')
     try:
         config = json.loads(config_path.read_text())
         expected_unit = config.get('baseline_unit_sha256') if isinstance(config, dict) else None
     except (OSError, ValueError):
-        raise RuntimeError('Owner unit contract is unavailable') from None
+        raise UnsafeContract('Owner unit contract is unavailable') from None
     if not isinstance(expected_unit, str) or not re.fullmatch(r'[0-9a-f]{64}', expected_unit):
-        raise RuntimeError('Owner unit contract is invalid')
-    if digest(vendor_unit) != expected_unit:
-        raise RuntimeError('Vendor unit drift requires owner review; execution refused')
+        raise UnsafeContract('Owner unit contract is invalid')
     verify_dropins(config, dropin_dirs, owner_uid, trust_root)
+    if digest(vendor_unit) != expected_unit or overridden:
+        raise ContractDrift('Vendor unit drift requires owner review; execution refused')
     pending = {'atomic_api': 'PENDING', 'selection': 'vendor_package'}
     try:
         valid = (config.keys() == FIELDS and config['format'] == 'lldap-esc-overlay-v1'
@@ -132,7 +144,7 @@ def main():
                            capture_output=True, text=True, check=False)
     for fragment in ('/etc/systemd/system/lldap.service', '/run/systemd/system/lldap.service'):
         if os.path.lexists(fragment):
-            raise RuntimeError('Overridden vendor unit requires owner review')
+            raise UnsafeContract('Overridden vendor unit requires owner review')
     version = query.stdout.strip() if query.returncode == 0 else None
     binary, status = select_binary(Path(__file__).absolute().parent, Path('/usr/bin/lldap'), version)
     print(json.dumps(status, sort_keys=True), file=sys.stderr, flush=True)

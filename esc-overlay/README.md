@@ -26,8 +26,8 @@ Linux tests include a real isolated Debian package install/diversion/update
 with changed unit arguments, API PENDING and current-package availability;
 owned rollback; injected interruption recovery; PostgreSQL backup secrecy and
 explicit retention; parent safety; and artifact/config selection. Run
-`python3 esc-overlay/prove_guards.py` on the Linux runner: all tests plus seven
-independent guard-removal mutations must pass. The separate private PostgreSQL17
+`python3 esc-overlay/prove_guards.py` on the Linux runner: all tests plus independent
+guard-removal mutations must pass. The separate private PostgreSQL17
 native gate verifies real service creation/rollback/concurrent readback and a
 consistent PostgreSQL custom archive. These are source/lab proofs, not deployed
 coverage or credential/grant approval.
