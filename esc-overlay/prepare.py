@@ -14,7 +14,7 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def prepare(output, artifact, artifact_sha, package_version, package_sha, unit_sha, baseline_dropins):
+def prepare(output, artifact, artifact_sha, package_version, package_sha, unit_sha, baseline_dropins, package_diversion=False):
     if any(not re.fullmatch(r'[0-9a-f]{64}', value) for value in (artifact_sha, package_sha, unit_sha)):
         raise ValueError('Explicit artifact and baseline SHA256 values are required')
     if not isinstance(baseline_dropins, dict) or any(
@@ -52,10 +52,19 @@ def prepare(output, artifact, artifact_sha, package_version, package_sha, unit_s
               'baseline_unit_sha256': unit_sha, 'baseline_dropins': baseline_dropins}
     (release / 'deployment.json').write_text(json.dumps(config, sort_keys=True) + '\n')
     (release / 'deployment.json').chmod(0o444)
-    unit = output / 'etc/systemd/system/lldap.service.d/zz-esc-atomic-service-user.conf'
-    unit.parent.mkdir(parents=True)
-    unit.write_text('[Service]\nExecStart=\nExecStart=/usr/bin/python3 /' + str(relative / 'runtime.py') + '\n')
-    unit.chmod(0o444)
+    if package_diversion:
+        shutil.copyfile(Path(__file__).with_name('divert_runtime.py'), release / 'divert_runtime.py')
+        (release / 'divert_runtime.py').chmod(0o555)
+        wrapper = output / 'usr/bin/lldap'
+        wrapper.parent.mkdir(parents=True)
+        wrapper.write_text('#!/usr/bin/python3 -I\nimport runpy\nrunpy.run_path(' +
+                           repr('/' + str(relative / 'divert_runtime.py')) + ", run_name='__main__')\n")
+        wrapper.chmod(0o555)
+    else:
+        unit = output / 'etc/systemd/system/lldap.service.d/zz-esc-atomic-service-user.conf'
+        unit.parent.mkdir(parents=True)
+        unit.write_text('[Service]\nExecStart=\nExecStart=/usr/bin/python3 /' + str(relative / 'runtime.py') + '\n')
+        unit.chmod(0o444)
     directories = [path for path in output.rglob('*') if path.is_dir()]
     for directory in directories:
         directory.chmod(0o755)
@@ -79,10 +88,11 @@ def main():
     parser.add_argument('--baseline-sha256', required=True)
     parser.add_argument('--baseline-unit-sha256', required=True)
     parser.add_argument('--baseline-dropins-manifest', type=Path, required=True)
+    parser.add_argument('--package-diversion', action='store_true')
     args = parser.parse_args()
     print(json.dumps(prepare(args.output, args.artifact, args.artifact_sha256,
                              args.baseline_package_version, args.baseline_sha256, args.baseline_unit_sha256,
-                             json.loads(args.baseline_dropins_manifest.read_text()))))
+                             json.loads(args.baseline_dropins_manifest.read_text()), args.package_diversion)))
 
 
 if __name__ == '__main__':

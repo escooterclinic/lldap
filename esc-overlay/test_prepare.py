@@ -89,3 +89,12 @@ class PreparationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.stage()
         self.assertFalse(self.output.exists())
+
+    def test_diversion_bundle_keeps_vendor_unit_and_arguments_untouched(self):
+        result = prepare.prepare(self.output, self.artifact, self.digest,
+                                 '0.6.3', 'a' * 64, 'b' * 64, {}, package_diversion=True)
+        self.assertFalse((self.output / 'etc').exists())
+        self.assertEqual(len(result['files']), 5)
+        wrapper = self.output / 'usr/bin/lldap'
+        self.assertTrue(wrapper.read_text().startswith('#!/usr/bin/python3 -I\n'))
+        self.assertNotIn('--config-file', wrapper.read_text())
