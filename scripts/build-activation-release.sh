@@ -32,11 +32,15 @@ PY
     export RUSTUP_HOME="$PWD/.gate-rustup"
     export PATH="$CARGO_HOME/bin:${PATH:-/usr/bin:/bin}"
   fi
-  cargo test --locked --workspace --exclude lldap_app
+  rustup component add --toolchain 1.91.0 rustfmt clippy
+  cargo fmt --all --check
+  cargo clippy --locked --tests --workspace -- -D warnings
+  cargo test --locked --workspace
   bash scripts/test-service-postgres.sh
   bash scripts/mutate-postgres-service.sh
   python3 esc-overlay/prove_guards.py
   bash scripts/test-atomic-service-user.sh --build-artifact "$output/artifact"
+  cmp schema.graphql "$output/artifact/schema.graphql"
   readelf --version-info "$output/artifact/lldap" > "$output/elf-version-info.txt"
   ldd "$output/artifact/lldap" > "$output/linked-libraries.txt"
 } 2>&1 | tee "$output/build.log"

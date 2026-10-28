@@ -738,8 +738,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires the private PostgreSQL cluster owned by test-service-postgres.sh"]
     async fn test_service_user_postgres_atomicity_and_concurrent_readback() {
-        use sea_orm::{ConnectOptions, ConnectionTrait, Database, PaginatorTrait};
         use lldap_domain_handlers::handler::GroupBackendHandler;
+        use sea_orm::{ConnectOptions, ConnectionTrait, Database, PaginatorTrait};
         use std::sync::Arc;
         let url = std::env::var("LLDAP_TEST_POSTGRES_URL")
             .expect("the PostgreSQL gate must own its database URL");
@@ -751,34 +751,80 @@ mod tests {
         let bot_id = insert_group(&handler, "Bot").await;
         let marker = handler.get_group_details(bot_id).await.unwrap();
         let good = UserId::new("svc-pg-positive");
-        handler.create_service_user(CreateUserRequest {
-            user_id: good.clone(), email: "positive@example.invalid".into(),
-            ..Default::default()
-        }, marker.uuid.clone()).await.unwrap();
+        handler
+            .create_service_user(
+                CreateUserRequest {
+                    user_id: good.clone(),
+                    email: "positive@example.invalid".into(),
+                    ..Default::default()
+                },
+                marker.uuid.clone(),
+            )
+            .await
+            .unwrap();
         assert_eq!(handler.get_user_groups(&good).await.unwrap().len(), 1);
         let other_id = insert_group(&handler, "Human").await;
         let other = handler.get_group_details(other_id).await.unwrap();
         let denied = UserId::new("svc-pg-denied");
-        assert!(handler.create_service_user(CreateUserRequest {
-            user_id: denied.clone(), email: "denied@example.invalid".into(),
-            ..Default::default()
-        }, other.uuid).await.is_err());
+        assert!(
+            handler
+                .create_service_user(
+                    CreateUserRequest {
+                        user_id: denied.clone(),
+                        email: "denied@example.invalid".into(),
+                        ..Default::default()
+                    },
+                    other.uuid
+                )
+                .await
+                .is_err()
+        );
         assert!(handler.get_user_details(&denied).await.is_err());
         let before = handler.get_group_details(bot_id).await.unwrap();
         pool.execute_unprepared("CREATE FUNCTION service_membership_failure() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'injected membership failure'; END; $$ LANGUAGE plpgsql").await.unwrap();
         pool.execute_unprepared("CREATE TRIGGER service_membership_failure BEFORE INSERT ON memberships FOR EACH ROW EXECUTE FUNCTION service_membership_failure()").await.unwrap();
         let failed = UserId::new("svc-pg-rollback");
-        assert!(handler.create_service_user(CreateUserRequest {
-            user_id: failed.clone(), email: "rollback@example.invalid".into(),
-            attributes: vec![Attribute { name: "first_name".into(), value: "fixture".to_string().into() }],
-            ..Default::default()
-        }, marker.uuid.clone()).await.is_err());
+        assert!(
+            handler
+                .create_service_user(
+                    CreateUserRequest {
+                        user_id: failed.clone(),
+                        email: "rollback@example.invalid".into(),
+                        attributes: vec![Attribute {
+                            name: "first_name".into(),
+                            value: "fixture".to_string().into()
+                        }],
+                        ..Default::default()
+                    },
+                    marker.uuid.clone()
+                )
+                .await
+                .is_err()
+        );
         assert!(handler.get_user_details(&failed).await.is_err());
-        assert_eq!(model::UserAttributes::find().filter(model::UserAttributesColumn::UserId.eq(failed.clone())).count(&pool).await.unwrap(), 0);
-        assert_eq!(model::Membership::find().filter(model::MembershipColumn::UserId.eq(failed)).count(&pool).await.unwrap(), 0);
+        assert_eq!(
+            model::UserAttributes::find()
+                .filter(model::UserAttributesColumn::UserId.eq(failed.clone()))
+                .count(&pool)
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            model::Membership::find()
+                .filter(model::MembershipColumn::UserId.eq(failed))
+                .count(&pool)
+                .await
+                .unwrap(),
+            0
+        );
         assert_eq!(handler.get_group_details(bot_id).await.unwrap(), before);
-        pool.execute_unprepared("DROP TRIGGER service_membership_failure ON memberships").await.unwrap();
-        pool.execute_unprepared("DROP FUNCTION service_membership_failure()").await.unwrap();
+        pool.execute_unprepared("DROP TRIGGER service_membership_failure ON memberships")
+            .await
+            .unwrap();
+        pool.execute_unprepared("DROP FUNCTION service_membership_failure()")
+            .await
+            .unwrap();
         let pause = Arc::new((tokio::sync::Notify::new(), tokio::sync::Notify::new()));
         handler.service_user_pause = Some(pause.clone());
         let reader_pool = Database::connect(url).await.unwrap();
@@ -786,10 +832,16 @@ mod tests {
         let user = UserId::new("svc-pg-concurrent");
         let wanted = user.clone();
         let mut creation = tokio::spawn(async move {
-            handler.create_service_user(CreateUserRequest {
-                user_id: wanted, email: "concurrent@example.invalid".into(),
-                ..Default::default()
-            }, marker.uuid).await
+            handler
+                .create_service_user(
+                    CreateUserRequest {
+                        user_id: wanted,
+                        email: "concurrent@example.invalid".into(),
+                        ..Default::default()
+                    },
+                    marker.uuid,
+                )
+                .await
         });
         tokio::select! {
             _ = pause.0.notified() => {},
@@ -798,7 +850,10 @@ mod tests {
         let during = reader.get_user_details(&user).await;
         pause.1.notify_one();
         creation.await.unwrap().unwrap();
-        assert!(during.is_err(), "PostgreSQL reader observed an uncommitted unmarked user");
+        assert!(
+            during.is_err(),
+            "PostgreSQL reader observed an uncommitted unmarked user"
+        );
         assert_eq!(reader.get_user_groups(&user).await.unwrap().len(), 1);
         reader_pool.close().await.unwrap();
         pool.close().await.unwrap();
