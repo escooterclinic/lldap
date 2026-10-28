@@ -160,6 +160,8 @@ type Group {
 
 type Mutation {
   createUser(user: CreateUserInput!): User!
+  "Atomically create a non-human user and its exact current Bot membership."
+  createServiceUser(user: CreateUserInput!, expectedBotGroupUuid: String!): User!
   createGroup(name: String!): Group!
   createGroupWithDetails(request: CreateGroupInput!): Group!
   updateUser(user: UpdateUserInput!): Success!

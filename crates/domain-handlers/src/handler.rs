@@ -147,6 +147,11 @@ pub trait UserListerBackendHandler: ReadSchemaBackendHandler {
 pub trait UserBackendHandler: ReadSchemaBackendHandler {
     async fn get_user_details(&self, user_id: &UserId) -> Result<User>;
     async fn create_user(&self, request: CreateUserRequest) -> Result<()>;
+    async fn create_service_user(
+        &self,
+        request: CreateUserRequest,
+        expected_bot_group_uuid: Uuid,
+    ) -> Result<()>;
     async fn update_user(&self, request: UpdateUserRequest) -> Result<()>;
     async fn delete_user(&self, user_id: &UserId) -> Result<()>;
     async fn add_user_to_group(&self, user_id: &UserId, group_id: GroupId) -> Result<()>;

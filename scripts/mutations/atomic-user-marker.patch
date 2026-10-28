@@ -1,0 +1,18 @@
+--- a/crates/sql-backend-handler/src/sql_user_backend_handler.rs
++++ b/crates/sql-backend-handler/src/sql_user_backend_handler.rs
+@@ -400,6 +400,7 @@
+     ) -> Result<()> {
+         #[cfg(test)]
+         let pause = self.service_user_pause.clone();
++        self.create_user(request.clone()).await?;
+         self.sql_pool
+             .transaction::<_, (), DomainError>(|transaction| {
+                 Box::pin(async move {
+@@ -429,7 +430,6 @@
+                         ));
+                     }
+                     let user_id = request.user_id.clone();
+-                    Self::insert_user_in_transaction(transaction, request).await?;
+                     #[cfg(test)]
+                     if let Some(pause) = pause {
+                         pause.0.notify_one();
